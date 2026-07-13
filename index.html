@@ -3,58 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#111827">
-  <title>Alex's Website Playground</title>
+  <title>Website Ready</title>
   <style>
-    :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      color: #f8fafc;
-      background: radial-gradient(circle at top, #312e81 0, #111827 44%, #030712 100%);
-    }
-    main {
-      width: min(760px, 100%);
-      padding: 40px;
-      border: 1px solid rgba(255,255,255,.14);
-      border-radius: 28px;
-      background: rgba(15,23,42,.78);
-      box-shadow: 0 30px 90px rgba(0,0,0,.35);
-      backdrop-filter: blur(14px);
-    }
-    .tag { margin: 0 0 10px; color: #a5b4fc; font-size: 13px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
-    h1 { margin: 0; font-size: clamp(38px, 8vw, 68px); line-height: 1; }
-    .intro { max-width: 620px; margin: 18px 0 32px; color: #cbd5e1; font-size: 18px; line-height: 1.6; }
-    .card {
-      display: block;
-      padding: 24px;
-      color: inherit;
-      text-decoration: none;
-      border: 1px solid rgba(255,255,255,.14);
-      border-radius: 20px;
-      background: rgba(255,255,255,.06);
-      transition: transform .15s ease, background .15s ease;
-    }
-    .card:hover { transform: translateY(-3px); background: rgba(255,255,255,.1); }
-    .card strong { display: block; margin-bottom: 7px; font-size: 23px; }
-    .card span { color: #cbd5e1; line-height: 1.5; }
-    footer { margin-top: 28px; color: #64748b; font-size: 13px; }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f172a; color: #f8fafc; }
+    main { text-align: center; padding: 32px; }
+    p { color: #94a3b8; }
   </style>
 </head>
 <body>
   <main>
-    <p class="tag">Cloudflare deployment test</p>
-    <h1>Website Playground</h1>
-    <p class="intro">This is the home for small websites and experiments. Updates pushed to the connected GitHub repository deploy automatically through Cloudflare.</p>
-    <a class="card" href="/counter/">
-      <strong>The Silly Counter</strong>
-      <span>A shared counter that increases whenever anyone presses the button.</span>
-    </a>
-    <footer>Deployed from GitHub through Cloudflare Pages.</footer>
+    <h1>Website Ready</h1>
+    <p>This deployment is ready for the next project.</p>
   </main>
 </body>
 </html>
