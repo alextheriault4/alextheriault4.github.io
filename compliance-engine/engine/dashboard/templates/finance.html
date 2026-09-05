@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block body %}<h1>Finance</h1>
+{% if not live %}<p class="badge warn">Stripe is not live; amounts below come from simulated payments.</p>{% endif %}
+<div class="grid"><div class="card"><h3>Gross</h3><div class="kpi">{{ fin.gross_cents|money }}</div></div><div class="card"><h3>Refunds</h3><div class="kpi">{{ fin.refunds_cents|money }}</div></div>
+<div class="card"><h3>Processing fees (est.)</h3><div class="kpi">{{ fin.fees_cents|money }}</div></div><div class="card"><h3>Net</h3><div class="kpi">{{ fin.net_cents|money }}</div></div>
+<div class="card"><h3>Sales tax collected</h3><div class="kpi">{{ fin.sales_tax_collected_cents|money }}</div><div class="muted">calculated and collected by Stripe Tax; remit per your registrations</div></div>
+<div class="card"><h3>Paid deals</h3><div class="kpi">{{ fin.paid_deals }}</div><div class="muted">avg {{ fin.avg_deal_cents|money }}</div></div></div>
+<p><a href="/finance/export.csv">Download ledger CSV</a> for your accountant.</p>
+<div class="row"><div class="card"><h3>By month</h3><table><tr><th>Month</th><th>Charges</th><th>Refunds</th><th>Fees</th><th>Tax</th><th>Net</th></tr>
+{% for m in monthly %}<tr><td>{{ m.month }}</td><td>{{ m.get('charge',0)|money }}</td><td>{{ m.get('refund',0)|money }}</td><td>{{ m.get('processing_fee',0)|money }}</td><td>{{ m.get('sales_tax',0)|money }}</td><td>{{ m.net_cents|money }}</td></tr>{% endfor %}</table></div>
+<div class="card"><h3>Taxable sales by client state</h3><p class="muted">Watch these against each state's economic-nexus threshold; register where you cross it.</p>
+<table><tr><th>State</th><th>Deals</th><th>Taxable</th><th>Tax collected</th></tr>{% for t in tax %}<tr><td>{{ t.region }}</td><td>{{ t.deals }}</td><td>{{ t.taxable_cents|money }}</td><td>{{ t.tax_cents|money }}</td></tr>{% endfor %}</table></div></div>
+<h2>Deals</h2><div class="card"><table><tr><th>#</th><th>Client</th><th>Package</th><th>Price</th><th>Status</th><th>Paid</th></tr>
+{% for d in deals %}<tr><td>{{ d.id }}</td><td><a href="/leads/{{ d.lead_id }}">{{ d.business_name or d.domain }}</a></td><td>{{ d.package }}</td><td>{{ d.price_cents|money }}</td><td><span class="badge">{{ d.status }}</span></td><td class="muted">{{ d.paid_at or '' }}</td></tr>{% endfor %}</table></div>{% endblock %}

@@ -1,0 +1,14 @@
+# /etc/systemd/system/compliance-dashboard.service
+[Unit]
+Description=Compliance engine dashboard
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/compliance-engine
+EnvironmentFile=/opt/compliance-engine/.env
+ExecStart=/opt/compliance-engine/.venv/bin/compliance-engine dashboard --host 127.0.0.1 --port 8787
+Restart=always
+User=engine
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block body %}<h1>Outbox</h1><p class="muted">Queued messages go out on the next tick when the gates allow. Held and draft messages wait for you.</p>
+{% for m in rows %}<div class="msg"><div class="meta"><a href="/leads/{{ m.lead_id }}">{{ m.domain }}</a> · {{ m.kind }} · <span class="badge">{{ m.status }}</span> · to {{ m.to_addr }} {% if m.hold_reason %}· <span class="impact-moderate">{{ m.hold_reason }}</span>{% endif %}</div>
+<strong>{{ m.subject }}</strong><pre>{{ m.body_text }}</pre>{% if m.lint and not m.lint.ok %}<p class="impact-serious">Lint: {{ m.lint.problems|join('; ') }}</p>{% endif %}
+{% if m.status in ('held','draft') %}<form class="inline" method="post" action="/messages/{{ m.id }}/approve"><button class="primary">Approve &amp; send</button></form> <form class="inline" method="post" action="/messages/{{ m.id }}/discard"><button class="danger">Discard</button></form>{% endif %}</div>{% endfor %}
+{% if not rows %}<p class="muted">Empty.</p>{% endif %}{% endblock %}

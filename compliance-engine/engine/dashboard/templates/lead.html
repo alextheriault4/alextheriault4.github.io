@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.domain }}{% endblock %}
+{% block body %}
+<h1>{{ lead.business_name or lead.domain }} <span class="badge">{{ lead.status }}</span></h1>
+<p class="muted"><a href="{{ lead.url }}" target="_blank" rel="noopener">{{ lead.url }}</a> · {{ lead.category or '' }} · {{ lead.city or '' }} {{ lead.region or '' }} · platform {{ lead.platform or '?' }} · contact {{ lead.contact_email or 'none' }} ({{ lead.contact_source or '' }})</p>
+{% if lead.needs_human_reason %}<div class="card" style="border-color:var(--bad)"><strong>Needs you:</strong> {{ lead.needs_human_reason }}</div>{% endif %}
+
+<div class="row">
+<div class="card"><h3>Scores</h3>
+{% if scan %}<div class="kpi">ADA {{ scan.ada_score }} · AI-SEO {{ scan.aiseo_score }}</div>
+{% if verification %}<div>After fix: ADA {{ verification.ada_score }} · AI-SEO {{ verification.aiseo_score }}</div>{% endif %}
+<p class="muted">Exposure (estimates): accessibility suits {{ scan.exposure.ada_low_cents|money }}–{{ scan.exposure.ada_typical_cents|money }} (up to {{ scan.exposure.ada_high_cents|money }}); AI-search revenue at risk {{ scan.exposure.aiseo_annual_low_cents|money }}–{{ scan.exposure.aiseo_annual_high_cents|money }}/yr.</p>
+<p><a href="/r/{{ thread[0].thread_token if thread else '' }}" target="_blank">public report</a> · pages: {{ scan.pages|length }}</p>
+{% else %}<p class="muted">Not scanned yet.</p>{% endif %}</div>
+<div class="card"><h3>Actions</h3>
+<form method="post" action="/leads/{{ lead.id }}/status"><select name="status">{% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == lead.status }}>{{ s }}</option>{% endfor %}</select>
+<input type="text" name="reason" placeholder="reason (optional)" style="margin-top:.4rem"><button style="margin-top:.4rem">Set status</button></form>
+{% if console and thread %}<form method="post" action="/leads/{{ lead.id }}/simulate-reply" style="margin-top:1rem"><textarea name="text" rows="3" placeholder="Simulate a reply from the prospect (console provider only)"></textarea><button style="margin-top:.4rem">Inject reply</button></form>{% endif %}
+</div>
+<div class="card"><h3>Site access (for automatic fixes)</h3>
+<form method="post" action="/leads/{{ lead.id }}/creds">
+<input type="text" name="wp_url" placeholder="WordPress URL" value="{{ creds.wp_url or '' }}"><input type="text" name="wp_user" placeholder="WP user" value="{{ creds.wp_user or '' }}" style="margin-top:.3rem">
+<input type="password" name="wp_app_password" placeholder="WP application password" style="margin-top:.3rem">
+<input type="text" name="github_repo" placeholder="GitHub repo owner/name" value="{{ creds.github_repo or '' }}" style="margin-top:.3rem"><input type="text" name="github_subdir" placeholder="site subdir in repo (optional)" value="{{ creds.github_subdir or '' }}" style="margin-top:.3rem">
+<button style="margin-top:.4rem">Save</button></form></div>
+</div>
+
+{% if deals %}<h2>Deals</h2><div class="card"><table><tr><th>#</th><th>Package</th><th>Price</th><th>Status</th><th>Checkout</th><th>Paid</th><th></th></tr>
+{% for d in deals %}<tr><td>{{ d.id }}</td><td>{{ d.package }}</td><td>{{ d.price_cents|money }}</td><td><span class="badge">{{ d.status }}</span></td><td class="muted">{{ d.checkout_url or '' }}</td><td class="muted">{{ d.paid_at or '' }}</td>
+<td>{% if d.status == 'checkout_sent' %}<form class="inline" method="post" action="/deals/{{ d.id }}/simulate-payment"><button>Simulate payment</button></form>{% endif %}</td></tr>{% endfor %}</table></div>{% endif %}
+
+{% if fixes %}<h2>Fixes</h2>{% for f in fixes %}<div class="card"><strong>{{ f.status }}</strong> via {{ f.strategy }} · before ADA {{ f.before_ada }} / AI-SEO {{ f.before_aiseo }}{% if f.after_ada is not none %} → after {{ f.after_ada }} / {{ f.after_aiseo }}{% endif %}
+{% if f.error %}<p class="impact-serious">{{ f.error }}</p>{% endif %}<p class="muted">{{ f.bundle_path }}</p>
+{% if f.summary.changes_by_rule %}<pre>{{ f.summary.changes_by_rule|json }}</pre>{% endif %}
+{% if f.summary.remaining %}<p><strong>Needs client input:</strong> {% for r in f.summary.remaining %}{{ r.rule_id }}{{ ', ' if not loop.last }}{% endfor %}</p>{% endif %}</div>{% endfor %}{% endif %}
+
+<h2>Conversation</h2>
+{% for m in thread %}<div class="msg {{ m.direction }}"><div class="meta">{{ m.direction|upper }} · {{ m.kind }} · <span class="badge">{{ m.status }}</span> {% if m.intent %}· intent <strong>{{ m.intent }}</strong>{% endif %} · {{ m.created_at[:16].replace('T',' ') }} · {{ m.direction == 'out' and m.to_addr or m.from_addr }}
+{% if m.hold_reason %}· <span class="impact-moderate">{{ m.hold_reason }}</span>{% endif %}</div>
+<strong>{{ m.subject }}</strong><pre>{{ m.body_text }}</pre>
+{% if m.lint and not m.lint.ok %}<p class="impact-serious">Lint: {{ m.lint.problems|join('; ') }}</p>{% endif %}
+{% if m.direction == 'out' and m.status in ('held','draft') %}<form class="inline" method="post" action="/messages/{{ m.id }}/approve"><button class="primary">Approve &amp; send</button></form>
+<form class="inline" method="post" action="/messages/{{ m.id }}/discard"><button class="danger">Discard</button></form>{% endif %}</div>{% endfor %}
+{% if not thread %}<p class="muted">No messages yet.</p>{% endif %}
+
+{% if findings %}<h2>Findings ({{ findings|length }})</h2><div class="card"><table><tr><th>Area</th><th>Rule</th><th>Impact</th><th>What</th><th>Page</th><th>Count</th></tr>
+{% for f in findings %}<tr><td>{{ f.kind }}</td><td>{{ f.rule_id }}</td><td class="impact-{{ f.impact }}">{{ f.impact }}</td><td>{{ f.description }}</td><td class="muted">{{ f.page_url.split('/')[-1] or '/' }}</td><td>{{ f.count }}</td></tr>{% endfor %}</table></div>{% endif %}
+
+<h2>Timeline</h2><div class="card"><table>{% for e in events %}<tr><td class="muted" style="white-space:nowrap">{{ e.created_at[:16].replace('T',' ') }}</td><td>{{ e.kind }}</td><td class="muted">{{ e.detail|json|truncate(200) }}</td></tr>{% endfor %}</table></div>
+{% endblock %}

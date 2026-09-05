@@ -1,0 +1,15 @@
+# /etc/systemd/system/compliance-engine.service
+[Unit]
+Description=Compliance engine loop
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/compliance-engine
+EnvironmentFile=/opt/compliance-engine/.env
+ExecStart=/opt/compliance-engine/.venv/bin/compliance-engine run
+Restart=always
+RestartSec=30
+User=engine
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block header %}{% endblock %}
+{% block title %}Website report for {{ lead.domain }}{% endblock %}
+{% block body %}
+<h1>Website report for {{ lead.business_name or lead.domain }}</h1>
+<p class="muted">Automated scan of {{ scan.pages|length }} page(s) on {{ scan.created_at[:10] }} by {{ company.name }}. Scores are out of 100.</p>
+<div class="grid"><div class="card"><h3>Accessibility</h3><div class="kpi">{{ scan.ada_score }}{% if verification %} → {{ verification.ada_score }}{% endif %}</div><div class="muted">WCAG 2.1/2.2 AA checks via axe-core plus manual heuristics</div></div>
+<div class="card"><h3>AI-search readiness</h3><div class="kpi">{{ scan.aiseo_score }}{% if verification %} → {{ verification.aiseo_score }}{% endif %}</div><div class="muted">can AI assistants and search engines find, read and describe the business</div></div></div>
+{% if verification %}<p class="badge ok">Verification rescan on {{ verification.created_at[:10] }}</p>{% endif %}
+<h2>What we found</h2>
+<div class="card"><table><tr><th>Area</th><th>Impact</th><th>Issue</th><th>Where</th><th>Count</th>{% if after is not none %}<th>After fix</th>{% endif %}</tr>
+{% for f in findings %}<tr><td>{{ 'Accessibility' if f.kind == 'ada' else 'AI search' }}</td><td class="impact-{{ f.impact }}">{{ f.impact }}</td><td>{{ f.description }}{% if f.help_url %} <a href="{{ f.help_url }}" target="_blank" rel="noopener">?</a>{% endif %}</td><td class="muted">{{ f.page_url.split('/')[-1] or 'home' }}</td><td>{{ f.count }}</td>
+{% if after is not none %}<td>{% set still = after|selectattr('rule_id','equalto',f.rule_id)|list %}{% if still %}<span class="badge warn">still present</span>{% else %}<span class="badge ok">resolved</span>{% endif %}</td>{% endif %}</tr>{% endfor %}</table></div>
+<h2>What this can cost</h2>
+<div class="card"><p><strong>Estimates, not predictions.</strong> Web-accessibility demand letters and suits against small businesses commonly settle in the {{ assumptions.ada_low_cents|money }}–{{ assumptions.ada_typical_cents|money }} range once legal fees are included, with worse outcomes up to about {{ assumptions.ada_high_cents|money }}. Roughly {{ assumptions.lawsuits_per_year }} such suits are filed per year in the US{% if assumptions.unruh_applies %}; California's Unruh Act adds statutory damages of at least {{ assumptions.unruh_statutory_min_cents|money }} per occurrence{% endif %}.</p>
+<p>On the search side, assuming about {{ assumptions.assumed_monthly_visits }} monthly visits, a {{ (assumptions.assumed_conversion_rate*100)|round(1) }}% conversion rate, an average sale of {{ assumptions.assumed_ticket_cents|money }} and {{ (assumptions.assumed_ai_discovery_share*100)|round(0) }}% of discovery now happening through AI assistants, the current gaps put roughly {{ assumptions.aiseo_annual_low_cents|money }}–{{ assumptions.aiseo_annual_high_cents|money }} of annual revenue at risk. Change any of those assumptions and the number changes with it.</p>
+<p class="muted">Sources: {% for s in assumptions.sources %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}</a>{{ '; ' if not loop.last }}{% endfor %}</p></div>
+<p class="muted">{{ company.legal_name }} · {{ company.postal_address }} · <a href="/u/{{ token }}">unsubscribe</a></p>
+{% endblock %}

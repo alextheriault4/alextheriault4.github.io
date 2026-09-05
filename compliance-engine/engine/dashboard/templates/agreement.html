@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block header %}{% endblock %}{% block title %}Service agreement{% endblock %}
+{% block body %}<div class="card" style="max-width:760px;margin:2rem auto">
+<h1>Service agreement</h1>
+<p><strong>{{ company.legal_name }}</strong> ("we") and <strong>{{ lead.business_name or lead.domain }}</strong> ("you") for the website at {{ lead.url }}.</p>
+<h2>1. Scope</h2><p>We will remediate the issues listed in your report ({{ deal.package }} package). Changes are limited to the pages and files we scanned plus site-level files (robots.txt, sitemap.xml, llms.txt, structured data, stylesheet for focus styles and contrast). Content and hosting decisions listed under "needs your input" in the change log are yours to make.</p>
+<h2>2. Price and payment</h2><p>{{ deal.price_cents|money }} {{ deal.currency|upper }} plus applicable sales tax, paid once through the Stripe checkout link. Paying accepts this agreement.</p>
+<h2>3. Delivery</h2><p>Within 10 business days of payment we either apply the changes through the access you provide (WordPress application password, repository, or collaborator invite) or deliver a change bundle with step-by-step instructions. Follow-up fixes to the delivered work are included for 30 days.</p>
+<h2>4. Verification and refund</h2><p>After the changes are live we rescan the site and send a before/after report. If the rescan does not show the reported issues resolved, we refund the fee in full.</p>
+<h2>5. No legal guarantee</h2><p>We fix the specific issues identified by automated and manual checks against WCAG 2.1/2.2 AA. We do not provide legal advice and do not represent that any website is or will be immune from complaints, demand letters or litigation. Accessibility is an ongoing obligation; new content needs the same care.</p>
+<h2>6. Access and data</h2><p>Any credentials you share are used only to perform this work, stored encrypted where possible, and deleted on request after delivery. We do not sell or share your data.</p>
+<h2>7. Liability</h2><p>Our total liability under this agreement is limited to the fee paid.</p>
+<p class="muted">{{ company.legal_name }} · {{ company.postal_address }} · {{ company.support_email }}</p></div>{% endblock %}

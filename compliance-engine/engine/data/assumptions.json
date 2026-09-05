@@ -1,0 +1,46 @@
+{
+  "_readme": "Every dollar figure the outreach email uses comes from this file, and the email discloses that they are estimates. Refresh these numbers periodically and keep the sources list current. Amounts are US cents.",
+  "ada": {
+    "lawsuits_per_year": 4000,
+    "lawsuits_note": "Approximate number of web-accessibility lawsuits filed per year in US federal and state courts. Industry year-end reports (e.g. UsableNet) have put recent years between roughly 4,000 and 4,600. Does not include demand letters, which are far more common and rarely public.",
+    "settlement_low_cents": 500000,
+    "settlement_high_cents": 2000000,
+    "settlement_note": "Commonly reported settlement range for small businesses that settle early ($5k-$20k). Individual outcomes vary widely.",
+    "defense_fees_low_cents": 1000000,
+    "defense_fees_high_cents": 5000000,
+    "defense_fees_note": "Rough range of legal fees when a business engages counsel and the matter proceeds beyond an initial demand ($10k-$50k).",
+    "unruh_statutory_min_cents": 400000,
+    "unruh_note": "California's Unruh Civil Rights Act provides statutory damages of at least $4,000 per occurrence plus attorney fees, which is why California sees a disproportionate share of filings.",
+    "state_multipliers": {"CA": 1.5, "NY": 1.4, "FL": 1.2, "PA": 1.1, "IL": 1.1, "default": 1.0},
+    "sources": [
+      {"title": "UsableNet - Year-end ADA digital accessibility lawsuit reports", "url": "https://blog.usablenet.com/ada-web-accessibility-lawsuit-reports"},
+      {"title": "ADA.gov - Guidance on Web Accessibility and the ADA", "url": "https://www.ada.gov/resources/web-guidance/"},
+      {"title": "Seyfarth Shaw - ADA Title III News & Insights (annual filing statistics)", "url": "https://www.adatitleiii.com/"},
+      {"title": "California Unruh Civil Rights Act, Civ. Code 52", "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=CIV&sectionNum=52."}
+    ]
+  },
+  "aiseo": {
+    "ai_discovery_share": 0.10,
+    "ai_discovery_share_note": "Assumed share of local-business discovery that now happens through AI assistants and AI-generated search answers rather than classic blue links. Conservative working assumption; adjust as better data appears.",
+    "traditional_search_drop_2026": 0.25,
+    "traditional_search_drop_note": "Gartner (Feb 2024) predicted traditional search engine volume would drop 25% by 2026 as users shift to AI chatbots and agents.",
+    "default_conversion_rate": 0.03,
+    "default_monthly_visits": {
+      "default": 600, "restaurant": 1500, "dentist": 800, "dental": 800, "lawyer": 500, "attorney": 500, "law": 500,
+      "plumber": 400, "hvac": 450, "electrician": 350, "salon": 700, "spa": 700, "gym": 900, "fitness": 900,
+      "auto repair": 500, "mechanic": 500, "chiropractor": 500, "veterinarian": 700, "vet": 700, "florist": 400,
+      "accountant": 300, "cpa": 300, "real estate": 800, "contractor": 350, "roofing": 350, "landscaping": 350, "cleaning": 400
+    },
+    "default_ticket_cents": {
+      "default": 15000, "restaurant": 4500, "dentist": 35000, "dental": 35000, "lawyer": 150000, "attorney": 150000, "law": 150000,
+      "plumber": 45000, "hvac": 60000, "electrician": 40000, "salon": 8000, "spa": 12000, "gym": 60000, "fitness": 60000,
+      "auto repair": 40000, "mechanic": 40000, "chiropractor": 30000, "veterinarian": 25000, "vet": 25000, "florist": 9000,
+      "accountant": 60000, "cpa": 60000, "real estate": 800000, "contractor": 500000, "roofing": 900000, "landscaping": 30000, "cleaning": 20000
+    },
+    "sources": [
+      {"title": "Gartner - Search engine volume will drop 25% by 2026 due to AI chatbots", "url": "https://www.gartner.com/en/newsroom/press-releases/2024-02-19-gartner-predicts-search-engine-volume-will-drop-25-percent-by-2026-due-to-ai-chatbots-and-other-virtual-agents"},
+      {"title": "llms.txt proposal", "url": "https://llmstxt.org/"},
+      {"title": "Schema.org LocalBusiness", "url": "https://schema.org/LocalBusiness"}
+    ]
+  }
+}

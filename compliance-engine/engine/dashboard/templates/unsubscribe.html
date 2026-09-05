@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% block header %}{% endblock %}{% block title %}Unsubscribed{% endblock %}
+{% block body %}<div class="card" style="max-width:560px;margin:3rem auto"><h1>You're unsubscribed</h1><p>{{ lead.contact_email }} will not receive further email from {{ company.name }}. That took effect immediately.</p><p class="muted">{{ company.legal_name }} · {{ company.postal_address }}</p></div>{% endblock %}

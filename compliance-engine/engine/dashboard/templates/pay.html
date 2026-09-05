@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block header %}{% endblock %}{% block title %}Payment{% endblock %}
+{% block body %}<div class="card" style="max-width:560px;margin:3rem auto"><h1>{{ deal.package }} package for {{ lead.domain }}</h1>
+<p class="kpi">{{ deal.price_cents|money }}</p>
+{% if live %}<p>Redirecting you to the secure checkout…</p>{% else %}<p class="badge warn">Payments are not live yet. This is a placeholder page; in live mode this link is a Stripe Checkout session.</p>{% endif %}
+<p><a href="/agreement/{{ deal.id }}">Read the service agreement</a></p></div>{% endblock %}

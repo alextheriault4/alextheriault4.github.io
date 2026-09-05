@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Pipeline</h1>
+<div class="grid">
+<div class="card"><h3>Leads</h3><div class="kpi">{{ counts.values()|sum }}</div>
+<div class="muted">new {{ counts.get('new',0) }} · scanned {{ counts.get('scanned',0) }} · queued {{ counts.get('queued',0) }} · no contact {{ counts.get('no_contact',0) }} · clean {{ counts.get('clean',0) }}</div></div>
+<div class="card"><h3>Cold emails sent</h3><div class="kpi">{{ sent }}</div><div class="muted">{{ counts.get('contacted',0) }} awaiting reply</div></div>
+<div class="card"><h3>Replies</h3><div class="kpi">{{ replies }}</div><div class="muted">{% if contacted %}{{ (100*replies/contacted)|round(1) }}% of contacted{% endif %} · engaged {{ counts.get('engaged',0) }} · not interested {{ counts.get('not_interested',0) }} · unsubscribed {{ counts.get('unsubscribed',0) }} · bounced {{ counts.get('bounced',0) }}</div></div>
+<div class="card"><h3>Deals</h3><div class="kpi">{{ fin.paid_deals }}</div><div class="muted">accepted {{ counts.get('accepted',0) }} · paid {{ counts.get('paid',0) }} · delivered {{ counts.get('delivered',0) }} · verified {{ counts.get('verified',0) }}</div></div>
+<div class="card"><h3>Net revenue</h3><div class="kpi">{{ fin.net_cents|money }}</div><div class="muted">gross {{ fin.gross_cents|money }} · tax collected {{ fin.sales_tax_collected_cents|money }}</div></div>
+<div class="card"><h3>Needs a human</h3><div class="kpi {{ 'impact-serious' if needs_human else '' }}">{{ needs_human|length }}</div><div class="muted">{{ held }} messages held for approval</div></div>
+</div>
+
+<div class="row" style="margin-top:1rem">
+<div class="card"><h3>Controls</h3>
+{% if paused %}<form class="inline" method="post" action="/controls/resume"><button class="primary">Resume</button></form>
+{% else %}<form class="inline" method="post" action="/controls/pause"><button class="danger">Pause everything</button></form>{% endif %}
+<form class="inline" method="post" action="/controls/tick"><button>Run one tick now</button></form>
+{% if breaker == 'tripped' %}<form class="inline" method="post" action="/controls/reset-breaker"><button>Reset breaker</button></form>{% endif %}
+<h3 style="margin-top:1rem">Gates</h3>
+<table>{% for name, (ok, why) in gates.items() %}<tr><td>{{ name }}</td><td><span class="badge {{ 'ok' if ok else 'warn' }}">{{ 'on' if ok else 'off' }}</span> <span class="muted">{{ why }}</span></td></tr>{% endfor %}
+<tr><td>auto send outreach</td><td>{{ autonomy.auto_send_outreach }}</td></tr><tr><td>auto reply</td><td>{{ autonomy.auto_reply }}</td></tr>
+<tr><td>auto send checkout</td><td>{{ autonomy.auto_send_checkout }}</td></tr><tr><td>auto apply fixes</td><td>{{ autonomy.auto_apply_fixes }}</td></tr></table>
+{% if last_report %}<h3 style="margin-top:1rem">Last tick</h3><pre>{{ last_report|json }}</pre>{% endif %}
+</div>
+<div class="card"><h3>Needs a human</h3>
+{% if not needs_human %}<p class="muted">Nothing waiting on you.</p>{% endif %}
+<table>{% for l in needs_human %}<tr><td><a href="/leads/{{ l.id }}">{{ l.domain }}</a></td><td>{{ l.needs_human_reason }}</td></tr>{% endfor %}</table>
+</div>
+</div>
+
+<div class="card" style="margin-top:1rem"><h3>Recent activity</h3>
+<table>{% for e in events %}<tr><td class="muted" style="white-space:nowrap">{{ e.created_at[5:16].replace('T',' ') }}</td><td>{{ e.kind }}</td><td>{% if e.lead_id %}<a href="/leads/{{ e.lead_id }}">{{ e.domain }}</a>{% endif %}</td><td class="muted">{{ e.detail|json|truncate(160) }}</td></tr>{% endfor %}</table></div>
+{% endblock %}

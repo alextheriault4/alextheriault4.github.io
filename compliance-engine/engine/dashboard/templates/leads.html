@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Leads</h1>
+<form method="get" class="row" style="margin-bottom:1rem"><div><input type="text" name="q" value="{{ q }}" placeholder="domain or name"></div>
+<div><select name="status"><option value="">any status</option>{% for s in statuses %}<option value="{{ s }}" {{ 'selected' if s == status }}>{{ s }}</option>{% endfor %}</select></div><div><button>Filter</button></div></form>
+<div class="card"><table><tr><th>Domain</th><th>Business</th><th>Where</th><th>Status</th><th>ADA</th><th>AI-SEO</th><th>Contact</th><th>Platform</th><th>Updated</th></tr>
+{% for r in rows %}<tr><td><a href="/leads/{{ r.id }}">{{ r.domain }}</a></td><td>{{ r.business_name or '' }}</td><td class="muted">{{ r.category or '' }} {{ r.city or '' }} {{ r.region or '' }}</td>
+<td><span class="badge">{{ r.status }}</span></td><td>{{ r.ada_score if r.ada_score is not none else '–' }}</td><td>{{ r.aiseo_score if r.aiseo_score is not none else '–' }}</td>
+<td class="muted">{{ r.contact_email or '–' }}</td><td class="muted">{{ r.platform or '' }}</td><td class="muted">{{ r.updated_at[:10] }}</td></tr>{% endfor %}</table></div>
+{% endblock %}

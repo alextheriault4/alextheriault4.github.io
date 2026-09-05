@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Compliance engine{% endblock %}</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#16181d;--muted:#5f6672;--line:#e3e6ea;--ok:#127a3e;--warn:#a05a00;--bad:#b3261e;--accent:#1f5fbf}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+a{color:var(--accent)}header.top{background:#fff;border-bottom:1px solid var(--line);padding:.6rem 1.2rem;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap}
+header.top a{text-decoration:none;color:var(--ink);font-weight:600}header.top .spacer{flex:1}
+.badge{display:inline-block;padding:.1rem .5rem;border-radius:999px;font-size:.8rem;border:1px solid var(--line);background:#fff}
+.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.warn{color:var(--warn);border-color:var(--warn)}.badge.bad{color:var(--bad);border-color:var(--bad)}
+main{max-width:1200px;margin:1.2rem auto;padding:0 1rem}.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem}.card h3{margin:.1rem 0 .5rem;font-size:.9rem;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+.kpi{font-size:1.8rem;font-weight:700}table{width:100%;border-collapse:collapse;font-size:.92rem}th,td{text-align:left;padding:.45rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}pre{white-space:pre-wrap;background:#f1f3f6;padding:.7rem;border-radius:8px;font-size:.85rem;overflow:auto}
+form.inline{display:inline}button,input[type=submit]{font:inherit;padding:.35rem .8rem;border-radius:7px;border:1px solid var(--line);background:#fff;cursor:pointer}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button.danger{color:var(--bad);border-color:var(--bad)}
+input[type=text],input[type=password],select,textarea{font:inherit;padding:.4rem .5rem;border:1px solid var(--line);border-radius:7px;width:100%}
+.muted{color:var(--muted)}.msg{border:1px solid var(--line);border-radius:10px;padding:.8rem;margin:.6rem 0;background:#fff}.msg.in{background:#eef4ff}
+.msg .meta{font-size:.82rem;color:var(--muted);margin-bottom:.4rem}.row{display:flex;gap:1rem;flex-wrap:wrap}.row>*{flex:1;min-width:280px}
+.impact-critical{color:var(--bad);font-weight:700}.impact-serious{color:var(--bad)}.impact-moderate{color:var(--warn)}.impact-minor{color:var(--muted)}
+h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.6rem}
+</style>
+</head>
+<body>
+{% block header %}
+<header class="top">
+<a href="/">Overview</a><a href="/leads">Leads</a><a href="/outbox">Outbox</a><a href="/finance">Finance</a>
+<span class="spacer"></span>
+<span class="badge {{ 'warn' if mode == 'dry_run' else 'ok' }}">{{ mode }}</span>
+{% if paused %}<span class="badge bad">paused</span>{% endif %}
+{% if breaker == 'tripped' %}<span class="badge bad">breaker tripped</span>{% endif %}
+<span class="badge">last tick: {{ last_tick or 'never' }}</span>
+</header>
+{% endblock %}
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>
