@@ -160,6 +160,56 @@ def test_credentials_are_purged_after_the_job():
 
 # --------------------------------------------------------------------------- go-live gate
 
+def test_send_allowlist_blocks_everyone_except_your_own_addresses(bad_site, settings, browser):
+    """Self-test mode: whatever the pipeline decides, mail can only reach you."""
+    from engine.db import Database as DB
+    from engine.inbox.provider import ConsoleProvider
+    from engine.llm import FakeLLM
+    from engine.outreach.compose import compose_initial
+    from engine.outreach.sequence import deliver_queued
+    from engine.scanning.runner import classify_after_scan, persist_scan, scan_site
+    from tests.test_pipeline import MONDAY_NOON_UTC
+
+    settings.legal.only_email_addresses = ["me@mine.example"]
+    db = DB(settings.database_path)
+    lead_id, _ = db.upsert_lead(domain="springfielddental.example", url=bad_site.url, category="dentist",
+                                city="Springfield", region="IL", source="test")
+    result = scan_site(bad_site.url, settings, browser)
+    scan_id = persist_scan(db, settings, db.get_lead(lead_id), result)
+    classify_after_scan(db, settings, lead_id, scan_id)
+    compose_initial(db, settings, FakeLLM(), lead_id)
+
+    provider = ConsoleProvider(settings.workdir)
+    stats = deliver_queued(db, settings, provider, now=MONDAY_NOON_UTC)
+    assert stats["sent"] == 0 and stats["suppressed"] == 1
+    msg = db.one("SELECT * FROM messages WHERE direction='out' ORDER BY id DESC LIMIT 1")
+    assert "only_email_addresses" in (msg["hold_reason"] or "").lower()
+
+    # The same message to an allowed address goes out normally.
+    db.update("leads", lead_id, contact_email="me@mine.example")
+    db.update("messages", msg["id"], status="queued", to_addr="me@mine.example", hold_reason=None)
+    assert deliver_queued(db, settings, provider, now=MONDAY_NOON_UTC)["sent"] == 1
+
+
+def test_self_test_mode_relaxes_only_the_stranger_protections(tmp_path):
+    s = Settings(_env_file=None, mode="live", database_path=tmp_path / "e.db", workdir=tmp_path)
+    s.company.postal_address = "1 Real St, Springfield, IL 62701"
+    s.company.website = "https://realco.example"
+    s.company.legal_name = "Real Co LLC"
+    s.company.from_email = "alex@outreach.realco.example"
+
+    # Without an allowlist, the business-readiness items still block live mode.
+    assert any("entity" in p for p in s.preflight())
+
+    # With one, only your own mailbox is reachable, so those no longer apply - but the
+    # honest-sender requirements above still do.
+    s.legal.only_email_addresses = ["me@mine.example"]
+    assert s.preflight() == []
+    assert s.self_test_mode
+    s.company.postal_address = ""
+    assert any("postal_address" in p for p in s.preflight())
+
+
 def test_preflight_blocks_live_mode_until_the_basics_are_true(tmp_path):
     s = Settings(_env_file=None, mode="live", database_path=tmp_path / "e.db", workdir=tmp_path)
     problems = " ".join(s.preflight())

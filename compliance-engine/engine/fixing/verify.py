@@ -53,11 +53,10 @@ def start_fix(db: Database, settings: Settings, llm: LLM, deal_id: int) -> int:
     if bundle is None:
         db.update("fixes", fix_id, status="failed", error=str(last_error)[:500])
         if autopilot.enabled(settings):
-            # We took money for work we cannot produce. Give it back before anyone has to ask.
-            autopilot.auto_refund(db, settings, deal_id, f"could not build the remediation: {last_error}")
-            queue_refund_email(db, settings, deal_id, f"we couldn't complete the work on {lead['domain']}")
-            autopilot.resolve(db, settings, lead["id"], "build_failed", str(last_error)[:300],
-                              f"Refunded {lead['domain']} automatically after the build failed")
+            # We took money for work we cannot produce, so a refund is owed - but you
+            # approve it. Nothing is said to the customer until you do.
+            autopilot.request_refund(db, settings, deal_id,
+                                     f"could not build the remediation for {lead['domain']}: {last_error}")
         else:
             db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"fix build failed: {last_error}")
         return fix_id
@@ -154,16 +153,14 @@ def verify_deal(db: Database, settings: Settings, browser: Browser, deal_id: int
     started = datetime.fromisoformat(fix["created_at"])
     age_days = (datetime.now(timezone.utc) - started).days
     deadline = settings.autopilot.auto_refund_after_days if autopilot.enabled(settings) else VERIFY_FOR_DAYS
-    if age_days > deadline:
+    already_declined = db.get_kv(f"deal:{deal_id}:refund_declined")
+    if age_days > deadline and not already_declined:
         db.update("leads", lead["id"], next_action_at=None)
         if autopilot.enabled(settings):
-            # They never put the changes live. Refund rather than hold their money and
-            # let it curdle into a dispute.
-            autopilot.auto_refund(db, settings, deal_id, f"changes never went live after {age_days} days")
-            queue_refund_email(db, settings, deal_id,
-                               f"the changes for {lead['domain']} never went live, so we've refunded you")
-            autopilot.resolve(db, settings, lead["id"], "never_verified", f"{age_days} days since delivery",
-                              f"Refunded {lead['domain']} automatically and closed the file")
+            # They never put the changes live. A refund is the clean way out, but it is
+            # your call - queued, not taken.
+            autopilot.request_refund(db, settings, deal_id,
+                                     f"changes for {lead['domain']} never went live after {age_days} days")
         else:
             db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN,
                                f"delivered fix never verified on the live site after {age_days} days")

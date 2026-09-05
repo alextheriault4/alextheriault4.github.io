@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from ..autopilot import erase_lead_data
+from ..autopilot import approve_refund, decline_refund, erase_lead_data, pending_refunds
 from ..config import Settings, get_settings
 from ..db import Database, utcnow
 from ..deals.checkout import handle_stripe_webhook, mark_paid
@@ -77,6 +77,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         return render(request, "index.html", counts=counts, sent=sent, replies=replies, contacted=contacted, held=held,
                       needs_human=needs_human, events=events, fin=fin, gates=gates, autonomy=settings.autonomy,
                       notices=db.notices(limit=12), preflight=settings.preflight(), autopilot=settings.autopilot,
+                      refunds=pending_refunds(db), self_test=settings.self_test_mode,
+                      allowlist=settings.legal.only_email_addresses,
                       last_report=json.loads(last_report) if last_report else None)
 
     # ---------------- leads ----------------
@@ -229,6 +231,20 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
     def finance_export():
         return PlainTextResponse(ledger.export_csv(db), media_type="text/csv",
                                  headers={"Content-Disposition": "attachment; filename=ledger.csv"})
+
+    @app.post("/deals/{deal_id}/refund/approve", dependencies=[Depends(admin)])
+    def refund_approve(deal_id: int):
+        result = approve_refund(db, settings, deal_id, approved_by="dashboard")
+        if not result.get("refunded"):
+            raise HTTPException(400, result.get("error") or result.get("reason") or "refund failed")
+        deal = db.one("SELECT lead_id FROM deals WHERE id=?", (deal_id,))
+        return RedirectResponse(f"/leads/{deal['lead_id']}", status_code=303)
+
+    @app.post("/deals/{deal_id}/refund/decline", dependencies=[Depends(admin)])
+    def refund_decline(deal_id: int, note: str = Form("")):
+        decline_refund(db, settings, deal_id, note)
+        deal = db.one("SELECT lead_id FROM deals WHERE id=?", (deal_id,))
+        return RedirectResponse(f"/leads/{deal['lead_id']}", status_code=303)
 
     @app.post("/deals/{deal_id}/simulate-payment", dependencies=[Depends(admin)])
     def simulate_payment(deal_id: int):

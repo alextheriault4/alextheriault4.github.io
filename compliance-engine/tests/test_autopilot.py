@@ -206,7 +206,8 @@ def test_a_deletion_request_is_honoured_immediately(lead_ready, settings):
 
 # --------------------------------------------------------------------- money back
 
-def test_undeliverable_work_is_refunded_automatically(lead_ready, settings, monkeypatch):
+def test_undeliverable_work_queues_a_refund_but_does_not_take_it(lead_ready, settings, monkeypatch):
+    """The engine decides a refund is owed and then stops. Money is never moved for you."""
     db, lead_id = lead_ready
     db.insert("messages", {"lead_id": lead_id, "thread_token": "tok9", "direction": "out", "kind": "initial",
                            "subject": "x", "body_text": "x", "to_addr": "a@b.c", "from_addr": "x@y.z",
@@ -222,26 +223,50 @@ def test_undeliverable_work_is_refunded_automatically(lead_ready, settings, monk
     monkeypatch.setattr(verify_mod, "build_bundle", boom)
     verify_mod.start_fix(db, settings, FakeLLM(), deal["id"])
 
-    assert db.one("SELECT status FROM deals WHERE id=?", (deal["id"],))["status"] == "refunded"
-    assert db.get_lead(lead_id)["status"] == "refunded"
-    refunds = db.query("SELECT * FROM ledger WHERE kind='refund'")
-    assert len(refunds) == 1 and refunds[0]["amount_cents"] == -settings.pricing.bundle_cents
-    note = db.one("SELECT * FROM messages WHERE kind='delivery' ORDER BY id DESC LIMIT 1")
-    assert "refunded" in note["body_text"].lower()
-    assert nobody_waiting(db)
+    assert db.one("SELECT status FROM deals WHERE id=?", (deal["id"],))["status"] == "refund_requested"
+    assert not db.query("SELECT 1 FROM ledger WHERE kind='refund'")     # no money moved
+    assert not db.query("SELECT 1 FROM messages WHERE kind='delivery'")  # customer not told yet
+    waiting = autopilot.pending_refunds(db)
+    assert len(waiting) == 1 and waiting[0]["price_cents"] == settings.pricing.bundle_cents
+    assert any(n["detail"].get("needs_you") for n in db.notices())
 
 
-def test_auto_refund_records_a_notice_and_closes_the_file(settings):
+def test_approving_a_refund_moves_the_money_and_tells_the_customer(settings):
     db = Database(settings.database_path)
-    lead_id, _ = db.upsert_lead(domain="x.example", url="https://x.example/", source="t")
+    lead_id, _ = db.upsert_lead(domain="x.example", url="https://x.example/",
+                                contact_email="owner@x.example", source="t")
+    db.insert("messages", {"lead_id": lead_id, "thread_token": "tk", "direction": "out", "kind": "initial",
+                           "subject": "x", "body_text": "x", "to_addr": "owner@x.example", "from_addr": "y@z.c",
+                           "message_id": "<tk.1@x>", "status": "sent", "created_at": "2026-01-01T00:00:00+00:00"})
     deal = open_or_create_deal(db, lead_id, Package.ADA, 149000, "usd")
     mark_paid(db, settings, deal["id"], payment_intent="pi_y")
 
-    out = autopilot.auto_refund(db, settings, deal["id"], "never went live")
+    autopilot.request_refund(db, settings, deal["id"], "never went live")
+    assert db.one("SELECT status FROM deals WHERE id=?", (deal["id"],))["status"] == "refund_requested"
+
+    out = autopilot.approve_refund(db, settings, deal["id"], approved_by="test")
     assert out["refunded"] and out["amount_cents"] == 149000
     assert db.get_lead(lead_id)["status"] == "refunded"
-    assert any("Refunded" in n["detail"]["headline"] for n in db.notices())
-    assert nobody_waiting(db)
+    refunds = db.query("SELECT * FROM ledger WHERE kind='refund'")
+    assert len(refunds) == 1 and refunds[0]["amount_cents"] == -149000
+    note = db.one("SELECT * FROM messages WHERE kind='delivery' ORDER BY id DESC LIMIT 1")
+    assert "refunded" in note["body_text"].lower()
+    assert not autopilot.pending_refunds(db)
+
+
+def test_declining_a_refund_keeps_the_money_and_stops_asking(settings):
+    db = Database(settings.database_path)
+    lead_id, _ = db.upsert_lead(domain="x.example", url="https://x.example/", source="t")
+    deal = open_or_create_deal(db, lead_id, Package.ADA, 149000, "usd")
+    mark_paid(db, settings, deal["id"], payment_intent="pi_z")
+    autopilot.request_refund(db, settings, deal["id"], "never went live")
+
+    autopilot.decline_refund(db, settings, deal["id"], "customer confirmed they are publishing next week")
+    assert db.one("SELECT status FROM deals WHERE id=?", (deal["id"],))["status"] == "delivered"
+    assert not db.query("SELECT 1 FROM ledger WHERE kind='refund'")
+    assert not autopilot.pending_refunds(db)
+    assert db.get_kv(f"deal:{deal['id']}:refund_declined")
+    assert db.get_lead(lead_id)["next_action_at"]  # quiet re-checks resume
 
 
 def test_escalation_closes_the_file_when_autopilot_is_on(settings):

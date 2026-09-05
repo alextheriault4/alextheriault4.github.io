@@ -25,6 +25,11 @@ class CompanySettings(BaseModel):
     from_name: str = "Outreach"
     from_email: str = "outreach@example.invalid"
     reply_domain: str = "example.invalid"
+    # Replies come back to "<reply_local_part>+<thread token>@<reply_domain>", which is how
+    # a reply is matched to its conversation. On a normal sending domain leave this as
+    # "reply" and use a catch-all. To test through a personal Gmail, set it to your own
+    # local part so the plus-address lands in your inbox (alex+ab12cd@gmail.com).
+    reply_local_part: str = "reply"
     support_email: str = "support@example.invalid"
     signer_name: str = "The Team"
 
@@ -60,10 +65,11 @@ class AutopilotSettings(BaseModel):
     clarify_attempts: int = 1          # unclear replies: ask once, then close politely
     build_retry_attempts: int = 1
     scan_retry_attempts: int = 1
-    # A deal that is delivered but never goes live gets nudged, then refunded and closed.
+    # A deal that is delivered but never goes live gets nudged, then a refund is queued
+    # for your approval. Refunds are never taken automatically: money leaving your account
+    # is your decision, so this is the one thing the autopilot always brings to you.
     verify_reminder_days: list[int] = Field(default_factory=lambda: [7, 21])
     auto_refund_after_days: int = 45
-    auto_refund: bool = True
     # Capacity problems (subscription usage limit, rate limit) just wait.
     capacity_backoff_minutes: int = 60
 
@@ -103,12 +109,22 @@ class LegalSettings(BaseModel):
     # Snapshots of other people's sites are someone else's copyrighted material.
     snapshot_retention_days: int = 90
     delete_credentials_after_delivery: bool = True
+    # Self-test mode: when this list is non-empty the engine will not send mail to any
+    # other address, whatever the pipeline decides. That makes a live end-to-end test on
+    # your own mailbox safe, and relaxes the go-live checks below that only exist to
+    # protect strangers (you cannot reach a stranger with the allowlist on).
+    only_email_addresses: list[str] = Field(default_factory=list)
     # Live mode stays locked until these are affirmatively true.
     agreement_reviewed_by_lawyer: bool = False
     business_entity_formed: bool = False
     liability_insurance: bool = False
     governing_law_state: str = "Delaware"
     require_preflight: bool = True
+
+    def allows(self, address: str) -> bool:
+        if not self.only_email_addresses:
+            return True
+        return (address or "").strip().lower() in {a.strip().lower() for a in self.only_email_addresses}
 
 
 class OutreachSettings(BaseModel):
@@ -221,10 +237,17 @@ class Settings(BaseSettings):
     def is_live(self) -> bool:
         return self.mode == "live"
 
+    @property
+    def self_test_mode(self) -> bool:
+        """True when sending is restricted to an allowlist of your own addresses."""
+        return bool(self.legal.only_email_addresses)
+
     def preflight(self) -> list[str]:
         """Everything that must be true before this may run live. Empty list means ready."""
         problems: list[str] = []
         c = self.company
+        # These four are required whoever the recipient is: a commercial email has to say
+        # truthfully who sent it and where they are.
         if not c.postal_address or "SET CE_COMPANY__POSTAL_ADDRESS" in c.postal_address:
             problems.append("company.postal_address is unset - CAN-SPAM requires a real physical address in every email")
         if "example.invalid" in c.website or not c.website:
@@ -233,6 +256,13 @@ class Settings(BaseSettings):
             problems.append("company.legal_name is still the placeholder")
         if "@example.invalid" in c.from_email:
             problems.append("company.from_email is still the placeholder")
+        if self.autonomy.auto_apply_fixes and not self.secrets_key:
+            problems.append("secrets_key is unset - client site credentials would be stored unencrypted")
+        if self.self_test_mode:
+            # Only your own addresses are reachable, so the business-readiness checks below
+            # (which exist to protect the people you would otherwise be cold-emailing) do
+            # not apply yet. They come back the moment the allowlist is cleared.
+            return problems
         if not self.legal.business_entity_formed:
             problems.append("legal.business_entity_formed is false - operate through an entity, not personally")
         if not self.legal.agreement_reviewed_by_lawyer:

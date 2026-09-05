@@ -49,6 +49,7 @@ def _outbound(settings: Settings, msg: dict[str, Any]) -> OutboundEmail:
         to=msg["to_addr"], subject=msg["subject"], text=msg["body_text"], html=msg.get("body_html"),
         message_id=msg["message_id"], thread_token=msg["thread_token"], from_addr=settings.company.from_email,
         from_name=settings.company.from_name, reply_domain=settings.company.reply_domain, in_reply_to=msg.get("in_reply_to"),
+        reply_local_part=settings.company.reply_local_part,
         unsubscribe_url=unsubscribe_url(settings, msg["thread_token"]) if msg["kind"] in ("initial", "followup") else None,
     )
 
@@ -71,6 +72,14 @@ def deliver_queued(db: Database, settings: Settings, provider: EmailProvider, no
             continue
         if db.is_suppressed(msg["to_addr"]):
             db.update("messages", msg["id"], status=MessageStatus.SUPPRESSED)
+            stats["suppressed"] += 1
+            continue
+        if not settings.legal.allows(msg["to_addr"]):
+            # Self-test allowlist is on: this address is not one of yours, so it is never
+            # contacted, whatever the rest of the pipeline concluded.
+            db.update("messages", msg["id"], status=MessageStatus.SUPPRESSED,
+                      hold_reason="blocked: not on CE_LEGAL__ONLY_EMAIL_ADDRESSES")
+            db.log_event("suppressed", lead["id"], message_id=msg["id"], reason="not on the send allowlist")
             stats["suppressed"] += 1
             continue
         cold = msg["kind"] in ("initial", "followup")

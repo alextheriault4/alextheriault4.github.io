@@ -23,7 +23,9 @@ from typing import Protocol
 from ..config import CompanySettings, EmailSettings
 from ..db import utcnow
 
-TOKEN_IN_ADDR = re.compile(r"reply\+([a-z0-9]+)@", re.I)
+# Any plus-address carries the thread token: "reply+ab12cd@..." on a real sending domain,
+# "you+ab12cd@gmail.com" when testing through a personal mailbox.
+TOKEN_IN_ADDR = re.compile(r"[^@\s]+\+([a-z0-9]+)@", re.I)
 TOKEN_IN_MSGID = re.compile(r"<([a-z0-9]+)\.(\d+)@", re.I)
 
 
@@ -40,10 +42,11 @@ class OutboundEmail:
     reply_domain: str
     in_reply_to: str | None = None
     unsubscribe_url: str | None = None
+    reply_local_part: str = "reply"
 
     @property
     def reply_to(self) -> str:
-        return f"reply+{self.thread_token}@{self.reply_domain}"
+        return f"{self.reply_local_part}+{self.thread_token}@{self.reply_domain}"
 
     def as_mime(self) -> EmailMessage:
         m = EmailMessage()

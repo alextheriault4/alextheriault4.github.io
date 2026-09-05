@@ -63,6 +63,7 @@ class DealStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     DELIVERED = "delivered"
     VERIFIED = "verified"
+    REFUND_REQUESTED = "refund_requested"   # waiting on you: money never moves on its own
     REFUNDED = "refunded"
     CANCELLED = "cancelled"
 
@@ -103,6 +104,8 @@ class EventKind(StrEnum):
     NOTICE = "notice"                 # for your information; no action needed
     DEFERRED = "deferred"             # no model capacity right now; will retry
     EXCLUDED = "excluded"             # refused by the contact policy
+    REFUND_REQUESTED = "refund_requested"   # queued for your approval
+    REFUND_DECLINED = "refund_declined"
     REFUNDED = "refunded"
     SUPPRESSED = "suppressed"
     BREAKER_TRIPPED = "breaker_tripped"

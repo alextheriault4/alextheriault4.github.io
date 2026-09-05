@@ -30,7 +30,9 @@
 
 {% if deals %}<h2>Deals</h2><div class="card"><table><tr><th>#</th><th>Package</th><th>Price</th><th>Status</th><th>Checkout</th><th>Paid</th><th></th></tr>
 {% for d in deals %}<tr><td>{{ d.id }}</td><td>{{ d.package }}</td><td>{{ d.price_cents|money }}</td><td><span class="badge">{{ d.status }}</span></td><td class="muted">{{ d.checkout_url or '' }}</td><td class="muted">{{ d.paid_at or '' }}</td>
-<td>{% if d.status == 'checkout_sent' %}<form class="inline" method="post" action="/deals/{{ d.id }}/simulate-payment"><button>Simulate payment</button></form>{% endif %}</td></tr>{% endfor %}</table></div>{% endif %}
+<td>{% if d.status == 'checkout_sent' %}<form class="inline" method="post" action="/deals/{{ d.id }}/simulate-payment"><button>Simulate payment</button></form>{% endif %}
+{% if d.status == 'refund_requested' %}<form class="inline" method="post" action="/deals/{{ d.id }}/refund/approve"><button class="primary">Approve refund</button></form>
+<form class="inline" method="post" action="/deals/{{ d.id }}/refund/decline"><button>Decline</button></form>{% endif %}</td></tr>{% endfor %}</table></div>{% endif %}
 
 {% if fixes %}<h2>Fixes</h2>{% for f in fixes %}<div class="card"><strong>{{ f.status }}</strong> via {{ f.strategy }} · before ADA {{ f.before_ada }} / AI-SEO {{ f.before_aiseo }}{% if f.after_ada is not none %} → after {{ f.after_ada }} / {{ f.after_aiseo }}{% endif %}
 {% if f.error %}<p class="impact-serious">{{ f.error }}</p>{% endif %}<p class="muted">{{ f.bundle_path }}</p>

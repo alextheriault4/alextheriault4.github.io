@@ -17,13 +17,18 @@ Reply is hostile or legal      Stand down: apologise once, suppress the address 
 Wrong person, no forwarding   Close the file.
 Asked for something we         Politely decline the extra and restate the packages.
 don't sell
-Fix build fails                Retry once, then refund and close.
-Fix never goes live            Two reminders, then refund and close.
+Fix build fails                Retry once, then queue a refund **for your approval**.
+Fix never goes live            Two reminders, then queue a refund **for your approval**.
 ============================  ===========================================================
 
-The distinction that matters: a **notice** tells you something happened and needs
-nothing from you; an **escalation** blocks a lead until you act. With the autopilot on,
-normal operation produces notices and no escalations.
+**Refunds are the deliberate exception.** The engine decides a refund is warranted and
+then stops: nothing is charged back and the customer is told nothing until you approve
+it. Money leaving your account is a decision about your business, not a dead end to be
+tidied away. Pending refunds appear on the dashboard and in ``compliance-engine refunds``.
+
+The distinction that matters elsewhere: a **notice** tells you something happened and
+needs nothing from you; an **escalation** blocks a lead until you act. With the autopilot
+on, normal operation produces notices, no escalations, and the occasional refund to okay.
 """
 from __future__ import annotations
 
@@ -192,45 +197,101 @@ def erase_lead_data(db: Database, settings: Settings, lead_id: int) -> dict[str,
 # Refunds
 # ---------------------------------------------------------------------------
 
-def auto_refund(db: Database, settings: Settings, deal_id: int, reason: str) -> dict[str, Any]:
-    """Give the money back and close the file.
+def request_refund(db: Database, settings: Settings, deal_id: int, reason: str) -> dict[str, Any]:
+    """Queue a refund for your approval. **Money never moves without you.**
 
-    Used whenever we cannot deliver what was promised. It costs one sale and removes the
-    only customer-side grievance that turns into a claim.
+    This is the one deliberate exception to the autopilot: the engine will decide that a
+    refund is warranted and stop there. Nothing is charged back and the customer is not
+    told anything until you approve it, because a refund is a business decision about your
+    money, not a dead end to be tidied away.
     """
     deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
-    if deal is None or deal["status"] == DealStatus.REFUNDED:
-        return {"refunded": False, "reason": "no open deal"}
+    if deal is None or deal["status"] in (DealStatus.REFUNDED, DealStatus.REFUND_REQUESTED):
+        return {"requested": False, "reason": "no open deal, or already queued"}
     lead = db.get_lead(deal["lead_id"])
+    db.update("deals", deal_id, status=DealStatus.REFUND_REQUESTED)
+    db.set_kv(f"deal:{deal_id}:refund_reason", reason)
+    db.set_kv(f"deal:{deal_id}:refund_requested_at", utcnow())
+    if lead:
+        # Stop the verification clock so it doesn't ask again while you're deciding.
+        db.update("leads", lead["id"], next_action_at=None)
+    db.log_event("refund_requested", deal["lead_id"], deal_id=deal_id, reason=reason,
+                 amount_cents=deal["price_cents"])
+    db.add_notice(deal["lead_id"],
+                  f"Refund of {money(deal['price_cents'])} for {lead['domain'] if lead else deal_id} "
+                  f"is waiting for your approval", reason=reason, deal_id=deal_id, needs_you=True)
+    return {"requested": True, "deal_id": deal_id, "amount_cents": deal["price_cents"], "reason": reason}
+
+
+def pending_refunds(db: Database) -> list[dict[str, Any]]:
+    rows = db.query(
+        "SELECT d.*, l.domain, l.business_name FROM deals d JOIN leads l ON l.id = d.lead_id "
+        "WHERE d.status = ? ORDER BY d.id", (DealStatus.REFUND_REQUESTED,))
+    for r in rows:
+        r["refund_reason"] = db.get_kv(f"deal:{r['id']}:refund_reason") or ""
+        r["requested_at"] = db.get_kv(f"deal:{r['id']}:refund_requested_at") or ""
+    return rows
+
+
+def approve_refund(db: Database, settings: Settings, deal_id: int, approved_by: str = "dashboard") -> dict[str, Any]:
+    """You said yes: move the money, tell the customer, close the file."""
+    deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
+    if deal is None or deal["status"] == DealStatus.REFUNDED:
+        return {"refunded": False, "reason": "no refundable deal"}
+    lead = db.get_lead(deal["lead_id"])
+    reason = db.get_kv(f"deal:{deal_id}:refund_reason") or "approved refund"
     refunded_cents = int(deal["price_cents"])
     stripe_id = None
-    if settings.autopilot.auto_refund and deal.get("stripe_payment_intent") and settings.stripe.secret_key:
+    if deal.get("stripe_payment_intent") and settings.stripe.secret_key:
         try:
             import stripe
 
             stripe.api_key = settings.stripe.secret_key
             r = stripe.Refund.create(payment_intent=deal["stripe_payment_intent"],
                                      reason="requested_by_customer",
-                                     metadata={"deal_id": str(deal_id), "auto_reason": reason[:200]})
+                                     metadata={"deal_id": str(deal_id), "reason": reason[:200]})
             stripe_id = r.get("id")
             refunded_cents = int(r.get("amount") or refunded_cents)
-        except Exception as e:  # noqa: BLE001 - a failed refund must still be recorded and told
-            db.add_notice(deal["lead_id"], f"Automatic refund for {lead['domain'] if lead else deal_id} failed - refund it by hand",
-                          error=str(e)[:300], deal_id=deal_id)
-            db.log_event("error", deal["lead_id"], stage="auto_refund", error=str(e)[:300])
+        except Exception as e:  # noqa: BLE001 - a failed refund must be visible, not swallowed
+            db.add_notice(deal["lead_id"],
+                          f"Refund for {lead['domain'] if lead else deal_id} failed at Stripe - do it by hand",
+                          error=str(e)[:300], deal_id=deal_id, needs_you=True)
+            db.log_event("error", deal["lead_id"], stage="approve_refund", error=str(e)[:300])
             return {"refunded": False, "error": str(e)[:300]}
     db.update("deals", deal_id, status=DealStatus.REFUNDED)
     db.insert("ledger", {"deal_id": deal_id, "kind": "refund", "amount_cents": -refunded_cents,
-                         "currency": deal["currency"], "stripe_id": stripe_id, "memo": f"auto refund: {reason}",
-                         "occurred_at": utcnow()})
+                         "currency": deal["currency"], "stripe_id": stripe_id,
+                         "memo": f"refund approved by {approved_by}: {reason}", "occurred_at": utcnow()})
     if lead:
         db.set_lead_status(lead["id"], LeadStatus.REFUNDED, reason)
         db.update("leads", lead["id"], next_action_at=None)
         db.purge_lead_credentials(lead["id"])
-        db.add_notice(lead["id"], f"Refunded {money(refunded_cents)} to {lead['domain']} automatically",
-                      reason=reason, deal_id=deal_id)
-    db.log_event("refunded", deal["lead_id"], deal_id=deal_id, amount_cents=refunded_cents, reason=reason)
+        db.add_notice(lead["id"], f"Refunded {money(refunded_cents)} to {lead['domain']}",
+                      reason=reason, deal_id=deal_id, approved_by=approved_by)
+        from .fixing.verify import queue_refund_email
+
+        queue_refund_email(db, settings, deal_id, reason)
+    db.log_event("refunded", deal["lead_id"], deal_id=deal_id, amount_cents=refunded_cents,
+                 reason=reason, approved_by=approved_by)
     return {"refunded": True, "amount_cents": refunded_cents, "stripe_id": stripe_id}
+
+
+def decline_refund(db: Database, settings: Settings, deal_id: int, note: str = "") -> dict[str, Any]:
+    """You said no: put the deal back and stop asking about it."""
+    deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
+    if deal is None or deal["status"] != DealStatus.REFUND_REQUESTED:
+        return {"declined": False, "reason": "no pending refund"}
+    db.update("deals", deal_id, status=DealStatus.DELIVERED)
+    db.set_kv(f"deal:{deal_id}:refund_declined", utcnow())
+    db.delete_kv(f"deal:{deal_id}:refund_requested_at")
+    lead = db.get_lead(deal["lead_id"])
+    if lead:
+        db.set_lead_status(lead["id"], LeadStatus.DELIVERED, note or "refund declined")
+        # Resume the quiet re-checks; never re-ask you about this deal.
+        nxt = datetime.now(timezone.utc) + timedelta(days=7)
+        db.update("leads", lead["id"], next_action_at=nxt.isoformat(timespec="seconds"))
+    db.log_event("refund_declined", deal["lead_id"], deal_id=deal_id, note=note)
+    return {"declined": True, "deal_id": deal_id}
 
 
 # ---------------------------------------------------------------------------

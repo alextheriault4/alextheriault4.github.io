@@ -131,13 +131,22 @@ log, not a queue: nothing there is waiting on a decision.
 | Reply asks to delete their data | Erases snapshots, findings and message bodies immediately; keeps only the suppression record |
 | Wrong person, no forwarding address | Closes the file |
 | Asks for work you don't sell | Declines plainly and restates the packages |
-| Fix build fails | Retries, then refunds automatically and emails them why |
-| Client never publishes the changes | Nudges at day 7 and 21, then refunds at day 45 and closes |
+| Fix build fails | Retries, then queues a refund **for your approval** |
+| Client never publishes the changes | Nudges at day 7 and 21, then queues a refund **for your approval** at day 45 |
+
+**Refunds are the one deliberate exception.** The engine works out that a refund is owed
+and then stops: no money moves and the customer is told nothing until you say yes. They
+appear on the dashboard overview with Refund / Keep the money buttons, and in
+`compliance-engine refunds --approve <deal>` / `--decline <deal>`.
 
 `compliance-engine notices` (or the Notices tab) shows what was handled. The overview's
 "Needs a human" count should sit at zero; the tests assert exactly that after each
 scenario above. Set `CE_AUTOPILOT__ENABLED=false` to get the older behaviour where these
 cases stop and wait for you.
+
+**To watch all of this happen on your own website and mailbox, follow
+[TESTING.md](TESTING.md)** — a verified step-by-step run from scan to fix, with a hard
+allowlist so nothing can reach anyone but you.
 
 The one thing that still stops everything is deliberate: the deliverability circuit
 breaker. If bounces exceed 5% or complaints 0.2%, cold sending pauses until you reset it.

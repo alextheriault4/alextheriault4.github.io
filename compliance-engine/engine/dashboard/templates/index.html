@@ -12,6 +12,29 @@
 <div class="muted">{{ held }} messages held for approval{% if autopilot.enabled %} · autopilot on, so this should stay at zero{% endif %}</div></div>
 </div>
 
+{% if refunds %}
+<div class="card" style="margin-top:1rem;border-color:var(--warn)">
+<h3 style="color:var(--warn)">Refunds waiting on you ({{ refunds|length }})</h3>
+<p class="muted">The engine decided these are owed but will not move any money without you.
+Nothing has been charged back and the customer has not been told.</p>
+<table><tr><th>Client</th><th>Amount</th><th>Why</th><th>Since</th><th></th></tr>
+{% for r in refunds %}<tr>
+<td><a href="/leads/{{ r.lead_id }}">{{ r.business_name or r.domain }}</a></td>
+<td>{{ r.price_cents|money }}</td><td>{{ r.refund_reason }}</td>
+<td class="muted">{{ r.requested_at[:10] }}</td>
+<td><form class="inline" method="post" action="/deals/{{ r.id }}/refund/approve"><button class="primary">Refund</button></form>
+<form class="inline" method="post" action="/deals/{{ r.id }}/refund/decline"><button>Keep the money</button></form></td>
+</tr>{% endfor %}</table></div>
+{% endif %}
+
+{% if self_test %}
+<div class="card" style="margin-top:1rem;border-color:var(--accent)">
+<h3 style="color:var(--accent)">Self-test mode</h3>
+<p>Email can only ever go to: <strong>{{ allowlist|join(', ') }}</strong>. Every other recipient is
+blocked at the send gate, so nothing can reach a stranger while you try this out.</p>
+</div>
+{% endif %}
+
 {% if preflight %}
 <div class="card" style="margin-top:1rem;border-color:var(--bad)">
 <h3 style="color:var(--bad)">Not ready to go live</h3>

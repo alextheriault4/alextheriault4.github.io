@@ -64,6 +64,19 @@ def cmd_tick(args: argparse.Namespace) -> None:
     print(json.dumps(_orc().tick(), indent=1))
 
 
+def cmd_send(args: argparse.Namespace) -> None:
+    """Flush the outbound queue now.
+
+    Cold email normally waits for a weekday inside the send window, which means a test run
+    in the evening or at a weekend looks like nothing happened. ``--now`` ignores that
+    window (the suppression list, the allowlist and the circuit breaker still apply).
+    """
+    from .outreach.sequence import deliver_queued
+
+    o = _orc()
+    print(json.dumps(deliver_queued(o.db, o.settings, o.provider, ignore_window=args.now), indent=1))
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     _orc().run_forever()
@@ -102,12 +115,16 @@ def cmd_simulate_payment(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
+    from .autopilot import pending_refunds
+
     o = _orc()
     print(json.dumps({
         "mode": o.settings.mode, "live_blocked": o.settings.live_blocked_reason(),
         "autopilot": o.settings.autopilot.enabled, "llm_provider": o.settings.llm.provider,
         "paused": o.db.is_paused(), "breaker": o.db.get_kv("breaker"), "last_tick": o.db.get_kv("last_tick"),
+        "self_test_allowlist": o.settings.legal.only_email_addresses or None,
         "waiting_on_you": len(o.db.leads_by_status("needs_human")), "unread_notices": len(o.db.notices()),
+        "refunds_awaiting_approval": len(pending_refunds(o.db)),
         "leads": o.db.counts_by_status(),
     }, indent=1))
 
@@ -138,6 +155,29 @@ def cmd_notices(args: argparse.Namespace) -> None:
         o.db.mark_notices_read()
 
 
+def cmd_refunds(args: argparse.Namespace) -> None:
+    """List refunds the engine thinks are owed, and approve or decline them. Money only
+    moves when you say so."""
+    from .autopilot import approve_refund, decline_refund, pending_refunds
+
+    o = _orc()
+    if args.approve:
+        print(json.dumps(approve_refund(o.db, o.settings, args.approve, approved_by="cli"), indent=1))
+        return
+    if args.decline:
+        print(json.dumps(decline_refund(o.db, o.settings, args.decline, args.note), indent=1))
+        return
+    rows = pending_refunds(o.db)
+    if not rows:
+        print("no refunds waiting")
+        return
+    for r in rows:
+        print(f"deal {r['id']}  {r['price_cents'] / 100:>9,.2f} {r['currency'].upper()}  "
+              f"{r['business_name'] or r['domain']}\n    since {r['requested_at'][:16]}  {r['refund_reason']}")
+    print("\napprove with:  compliance-engine refunds --approve <deal id>")
+    print("decline with:  compliance-engine refunds --decline <deal id> --note 'why'")
+
+
 def cmd_erase(args: argparse.Namespace) -> None:
     from .autopilot import erase_lead_data
 
@@ -165,6 +205,9 @@ def main(argv: list[str] | None = None) -> None:
     a = sub.add_parser("scan", help="scan new leads"); a.add_argument("--lead", type=int); a.add_argument("--limit", type=int, default=10); a.set_defaults(fn=cmd_scan)
     a = sub.add_parser("draft", help="draft outreach for scanned leads"); a.add_argument("--limit", type=int, default=20); a.set_defaults(fn=cmd_draft)
     sub.add_parser("tick", help="run one pass of every stage").set_defaults(fn=cmd_tick)
+    a = sub.add_parser("send", help="flush the outbound queue now")
+    a.add_argument("--now", action="store_true", help="ignore the weekday/business-hours send window")
+    a.set_defaults(fn=cmd_send)
     sub.add_parser("run", help="run the loop forever").set_defaults(fn=cmd_run)
     a = sub.add_parser("dashboard", help="serve the dashboard"); a.add_argument("--host"); a.add_argument("--port", type=int); a.set_defaults(fn=cmd_dashboard)
     a = sub.add_parser("simulate-reply", help="(console provider) inject a reply from a lead")
@@ -175,6 +218,9 @@ def main(argv: list[str] | None = None) -> None:
     a = sub.add_parser("notices", help="what the autopilot handled for you")
     a.add_argument("--all", action="store_true"); a.add_argument("--limit", type=int, default=50)
     a.add_argument("--mark-read", action="store_true"); a.set_defaults(fn=cmd_notices)
+    a = sub.add_parser("refunds", help="refunds awaiting your approval (money never moves on its own)")
+    a.add_argument("--approve", type=int, metavar="DEAL_ID"); a.add_argument("--decline", type=int, metavar="DEAL_ID")
+    a.add_argument("--note", default=""); a.set_defaults(fn=cmd_refunds)
     a = sub.add_parser("erase", help="delete everything held about one business")
     a.add_argument("--lead", type=int, required=True); a.set_defaults(fn=cmd_erase)
     sub.add_parser("export-ledger", help="print the ledger as CSV").set_defaults(fn=cmd_export_ledger)
