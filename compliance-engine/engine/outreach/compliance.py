@@ -69,6 +69,10 @@ def lint_email(*, subject: str, body_text: str, allowed_cents: Iterable[int], re
     for bad in FORBIDDEN_PHRASES:
         if re.search(r"(?<![a-z])" + re.escape(bad) + r"(?![a-z])", bl):
             problems.append(f"body contains forbidden phrase '{bad}'")
+    # We are not lawyers: no legal conclusions about their site, no promises of immunity.
+    from ..legal import check_email_body
+
+    problems += check_email_body(body_text)
     allowed = set()
     for c in allowed_cents:
         allowed |= _cents_to_variants(int(c))

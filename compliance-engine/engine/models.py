@@ -19,6 +19,8 @@ class LeadStatus(StrEnum):
     NOT_INTERESTED = "not_interested"
     UNSUBSCRIBED = "unsubscribed"
     BOUNCED = "bounced"
+    EXCLUDED = "excluded"          # outside the contact policy (non-US, excluded trade)
+    REFUNDED = "refunded"          # money returned, file closed
     NEEDS_HUMAN = "needs_human"    # agent hit a policy edge; shown on dashboard
     ARCHIVED = "archived"
 
@@ -97,6 +99,11 @@ class EventKind(StrEnum):
     FIX_DELIVERED = "fix_delivered"
     FIX_VERIFIED = "fix_verified"
     ESCALATED = "escalated"
+    AUTO_RESOLVED = "auto_resolved"   # the autopilot handled something that would have escalated
+    NOTICE = "notice"                 # for your information; no action needed
+    DEFERRED = "deferred"             # no model capacity right now; will retry
+    EXCLUDED = "excluded"             # refused by the contact policy
+    REFUNDED = "refunded"
     SUPPRESSED = "suppressed"
     BREAKER_TRIPPED = "breaker_tripped"
     STATUS_CHANGED = "status_changed"

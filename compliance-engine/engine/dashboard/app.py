@@ -16,11 +16,13 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from ..autopilot import erase_lead_data
 from ..config import Settings, get_settings
 from ..db import Database, utcnow
 from ..deals.checkout import handle_stripe_webhook, mark_paid
 from ..exposure import money
 from ..finance import ledger
+from ..legal import SecretBox, is_secret
 from ..models import LeadStatus, MessageStatus
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -74,6 +76,7 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         last_report = db.get_kv("last_tick_report")
         return render(request, "index.html", counts=counts, sent=sent, replies=replies, contacted=contacted, held=held,
                       needs_human=needs_human, events=events, fin=fin, gates=gates, autonomy=settings.autonomy,
+                      notices=db.notices(limit=12), preflight=settings.preflight(), autopilot=settings.autopilot,
                       last_report=json.loads(last_report) if last_report else None)
 
     # ---------------- leads ----------------
@@ -126,12 +129,36 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
     @app.post("/leads/{lead_id}/creds", dependencies=[Depends(admin)])
     def set_creds(lead_id: int, wp_url: str = Form(""), wp_user: str = Form(""), wp_app_password: str = Form(""),
                   github_repo: str = Form(""), github_subdir: str = Form("")):
+        box = SecretBox(settings.secrets_key)
         for k, v in (("wp_url", wp_url), ("wp_user", wp_user), ("wp_app_password", wp_app_password),
                      ("github_repo", github_repo), ("github_subdir", github_subdir)):
-            if v.strip():
+            if not v.strip():
+                continue
+            if is_secret(k):
+                # Refuses outright rather than writing a client's password in the clear.
+                try:
+                    db.set_secret(f"lead:{lead_id}:{k}", v.strip(), box)
+                except RuntimeError as e:
+                    raise HTTPException(400, str(e))
+            else:
                 db.set_kv(f"lead:{lead_id}:{k}", v.strip())
         db.log_event("status_changed", lead_id, note="access details updated")
         return RedirectResponse(f"/leads/{lead_id}", status_code=303)
+
+    @app.post("/leads/{lead_id}/erase", dependencies=[Depends(admin)])
+    def erase_lead(lead_id: int):
+        erase_lead_data(db, settings, lead_id)
+        return RedirectResponse(f"/leads/{lead_id}", status_code=303)
+
+    @app.get("/notices", response_class=HTMLResponse, dependencies=[Depends(admin)])
+    def notices(request: Request, all: int = 0):
+        rows = db.notices(limit=200, unread_only=not all)
+        return render(request, "notices.html", rows=rows, showing_all=bool(all))
+
+    @app.post("/notices/read", dependencies=[Depends(admin)])
+    def notices_read():
+        db.mark_notices_read()
+        return RedirectResponse("/notices", status_code=303)
 
     @app.post("/messages/{msg_id}/approve", dependencies=[Depends(admin)])
     def approve_message(msg_id: int):
@@ -245,6 +272,30 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
     @app.post("/u/{token}")
     def unsubscribe_post(token: str):
         return unsubscribe(None, token)  # List-Unsubscribe-Post one-click
+
+    @app.get("/bot", response_class=HTMLResponse)
+    def bot_info(request: Request):
+        """What our crawler is, so anyone who sees it in their logs can find out and block it."""
+        return render(request, "bot.html")
+
+    @app.get("/privacy", response_class=HTMLResponse)
+    def privacy(request: Request):
+        return render(request, "privacy.html")
+
+    @app.get("/terms", response_class=HTMLResponse)
+    def terms(request: Request):
+        return render(request, "terms.html")
+
+    @app.get("/erase/{token}", response_class=HTMLResponse)
+    def erase_page(request: Request, token: str):
+        lead = _lead_by_token(token)
+        return render(request, "erase.html", lead=lead, token=token, done=False)
+
+    @app.post("/erase/{token}", response_class=HTMLResponse)
+    def erase_confirm(request: Request, token: str):
+        lead = _lead_by_token(token)
+        erase_lead_data(db, settings, lead["id"])
+        return render(request, "erase.html", lead=lead, token=token, done=True)
 
     @app.get("/agreement/{deal_id}", response_class=HTMLResponse)
     def agreement(request: Request, deal_id: int):

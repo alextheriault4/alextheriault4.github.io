@@ -1,0 +1,44 @@
+{% extends "base.html" %}{% block header %}{% endblock %}
+{% block title %}Privacy{% endblock %}
+{% block body %}
+<div class="card" style="max-width:760px;margin:2rem auto">
+<h1>Privacy</h1>
+<p class="muted">{{ company.legal_name }} · {{ company.postal_address }}</p>
+
+<h2>What we collect, and where it comes from</h2>
+<ul>
+  <li><strong>Business contact details</strong> — a business name, website, category, town and a
+      published business email address, taken from public business directories, OpenStreetMap, and
+      the contact page of the business's own website. We do not buy lists and we do not collect
+      personal addresses.</li>
+  <li><strong>A copy of public pages</strong> from the website, kept so we can show exactly what was
+      wrong and, if hired, produce a corrected version. Deleted automatically after
+      {{ settings.legal.snapshot_retention_days }} days.</li>
+  <li><strong>Email correspondence</strong> with us, and whether a message was delivered or opted out of.</li>
+  <li><strong>For customers</strong>, the payment record from our payment processor (we never see or
+      store card numbers) and any site access credentials you choose to give us, encrypted and
+      deleted once the work is delivered.</li>
+</ul>
+
+<h2>Why</h2>
+<p>To offer a service to the business, to carry out that service if hired, and to keep proof that
+we honoured opt-outs. We do not sell, rent or share this data with anyone, and we do not use it to
+train models.</p>
+
+<h2>Your choices</h2>
+<ul>
+  <li><strong>Stop the email</strong> — reply with the word "unsubscribe", or use the link in any
+      message. It takes effect immediately and is permanent.</li>
+  <li><strong>Delete everything</strong> — reply with the word "delete", use the erase link in any
+      message, or email <a href="mailto:{{ company.support_email }}">{{ company.support_email }}</a>.
+      We erase the page copies, the scan results and the message contents. We keep only the
+      suppressed address itself, because that is what stops us contacting you again.</li>
+  <li><strong>Keep the crawler away</strong> — see <a href="/bot">our crawler page</a>.</li>
+</ul>
+
+<h2>Scope</h2>
+<p>We contact businesses in the United States only.</p>
+
+<p class="muted">Questions: <a href="mailto:{{ company.support_email }}">{{ company.support_email }}</a></p>
+</div>
+{% endblock %}

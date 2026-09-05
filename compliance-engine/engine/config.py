@@ -45,6 +45,72 @@ class AutonomySettings(BaseModel):
     auto_apply_fixes: bool = False
 
 
+class AutopilotSettings(BaseModel):
+    """How hard the engine tries to resolve things without you.
+
+    On (the default) every dead end has a safe automatic answer: drafts that fail the
+    compliance lint are repaired and then replaced by a template that cannot fail,
+    confusing replies get one clarifying question and are then closed politely, hostile
+    replies get a stand-down and a permanent suppression, and undeliverable work is
+    refunded. You are told what happened; you are not asked to decide.
+    """
+
+    enabled: bool = True
+    lint_repair_attempts: int = 2
+    clarify_attempts: int = 1          # unclear replies: ask once, then close politely
+    build_retry_attempts: int = 1
+    scan_retry_attempts: int = 1
+    # A deal that is delivered but never goes live gets nudged, then refunded and closed.
+    verify_reminder_days: list[int] = Field(default_factory=lambda: [7, 21])
+    auto_refund_after_days: int = 45
+    auto_refund: bool = True
+    # Capacity problems (subscription usage limit, rate limit) just wait.
+    capacity_backoff_minutes: int = 60
+
+
+class LegalSettings(BaseModel):
+    """Hard limits that exist to keep you out of court.
+
+    None of this is legal advice, and none of it makes a lawsuit impossible. It removes
+    the specific, known ways businesses in this niche get sued or fined: contacting
+    people outside CAN-SPAM's reach, contacting the professions most likely to sue,
+    crawling sites in ways that look like an attack, making legal claims you are not
+    licensed to make, and holding client credentials badly.
+    """
+
+    # CAN-SPAM governs US commercial email. Canada (CASL) and the EU/UK (GDPR/PECR) have
+    # consent regimes this engine does not implement, with penalties in the millions.
+    us_only: bool = True
+    allowed_country_codes: list[str] = Field(default_factory=lambda: ["US"])
+    blocked_tlds: list[str] = Field(default_factory=lambda: [
+        "ca", "uk", "eu", "de", "fr", "es", "it", "nl", "be", "ie", "se", "no", "dk", "fi",
+        "pl", "pt", "at", "ch", "gr", "cz", "ro", "hu", "au", "nz", "in", "cn", "jp", "kr", "br", "mx",
+    ])
+    # Cold-emailing plaintiff-side professions is asking for it; regulated verticals bring
+    # their own advertising rules; government and education bring procurement rules.
+    excluded_categories: list[str] = Field(default_factory=lambda: [
+        "lawyer", "attorney", "law", "legal", "solicitor", "paralegal", "court",
+        "government", "municipal", "city hall", "police", "school", "university", "college",
+        "political", "campaign", "church", "cannabis", "dispensary", "firearms", "gun",
+        "casino", "gambling", "adult", "escort", "payday", "debt collection", "crypto",
+    ])
+    blocked_domain_suffixes: list[str] = Field(default_factory=lambda: [".gov", ".mil", ".edu"])
+    # Scanning etiquette. A polite, identified, rate-limited crawler that obeys robots.txt
+    # is an ordinary web client; an aggressive one is a story about unauthorised access.
+    respect_robots: bool = True
+    crawl_delay_seconds: float = 2.0
+    bot_info_path: str = "/bot"
+    # Snapshots of other people's sites are someone else's copyrighted material.
+    snapshot_retention_days: int = 90
+    delete_credentials_after_delivery: bool = True
+    # Live mode stays locked until these are affirmatively true.
+    agreement_reviewed_by_lawyer: bool = False
+    business_entity_formed: bool = False
+    liability_insurance: bool = False
+    governing_law_state: str = "Delaware"
+    require_preflight: bool = True
+
+
 class OutreachSettings(BaseModel):
     daily_send_cap: int = 40
     followup_days: list[int] = Field(default_factory=lambda: [3, 7])
@@ -58,10 +124,26 @@ class OutreachSettings(BaseModel):
 
 
 class LLMSettings(BaseModel):
-    provider: Literal["claude", "fake"] = "claude"
+    """Which brain the agents use.
+
+    ``claude_code`` (the default) runs the Claude Code CLI headlessly, so the work is
+    billed against your Claude subscription rather than a pay-as-you-go API key - the
+    child process is started with ANTHROPIC_API_KEY stripped so it uses your Claude Code
+    login. ``claude`` uses the Anthropic API directly with an API key. ``fake`` is the
+    deterministic stand-in used by tests and keyless dry runs.
+    """
+
+    provider: Literal["claude_code", "claude", "fake"] = "claude_code"
     model: str = "claude-opus-5"
+    # Reply classification is a small job; a cheaper model keeps subscription usage down.
+    classify_model: str = "claude-sonnet-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     max_tokens: int = 16_000
+    # claude_code provider only
+    claude_binary: str = "claude"
+    timeout_seconds: int = 300
+    max_budget_usd: float = 1.0
+    max_attempts: int = 3
 
 
 class EmailSettings(BaseModel):
@@ -99,7 +181,13 @@ class ScanningSettings(BaseModel):
     chromium_path: str = ""
     max_pages_per_site: int = 4
     page_timeout_ms: int = 25_000
+    # An honest, identified user agent pointing at a page that explains the bot. Pretending
+    # to be a browser is the difference between "a crawler" and "someone evading controls".
     user_agent: str = "Mozilla/5.0 (compatible; ComplianceEngineBot/0.1; +https://example.invalid/bot)"
+
+    def user_agent_for(self, website: str, bot_path: str) -> str:
+        base = (website or "https://example.invalid").rstrip("/")
+        return f"Mozilla/5.0 (compatible; ComplianceEngineBot/0.1; +{base}{bot_path})"
 
 
 class Settings(BaseSettings):
@@ -115,6 +203,8 @@ class Settings(BaseSettings):
     company: CompanySettings = CompanySettings()
     pricing: PricingSettings = PricingSettings()
     autonomy: AutonomySettings = AutonomySettings()
+    autopilot: AutopilotSettings = AutopilotSettings()
+    legal: LegalSettings = LegalSettings()
     outreach: OutreachSettings = OutreachSettings()
     llm: LLMSettings = LLMSettings()
     email: EmailSettings = EmailSettings()
@@ -122,17 +212,52 @@ class Settings(BaseSettings):
     prospecting: ProspectingSettings = ProspectingSettings()
     dashboard: DashboardSettings = DashboardSettings()
     scanning: ScanningSettings = ScanningSettings()
+    # Encrypts client site credentials at rest. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    secrets_key: str = ""
 
     # ---- derived gates -------------------------------------------------
     @property
     def is_live(self) -> bool:
         return self.mode == "live"
 
+    def preflight(self) -> list[str]:
+        """Everything that must be true before this may run live. Empty list means ready."""
+        problems: list[str] = []
+        c = self.company
+        if not c.postal_address or "SET CE_COMPANY__POSTAL_ADDRESS" in c.postal_address:
+            problems.append("company.postal_address is unset - CAN-SPAM requires a real physical address in every email")
+        if "example.invalid" in c.website or not c.website:
+            problems.append("company.website is unset - recipients must be able to tell who is emailing them")
+        if not c.legal_name or c.legal_name == "Your Company LLC":
+            problems.append("company.legal_name is still the placeholder")
+        if "@example.invalid" in c.from_email:
+            problems.append("company.from_email is still the placeholder")
+        if not self.legal.business_entity_formed:
+            problems.append("legal.business_entity_formed is false - operate through an entity, not personally")
+        if not self.legal.agreement_reviewed_by_lawyer:
+            problems.append("legal.agreement_reviewed_by_lawyer is false - have counsel read the outreach template and agreement")
+        if not self.legal.liability_insurance:
+            problems.append("legal.liability_insurance is false - get errors-and-omissions cover before taking client money")
+        if not self.secrets_key:
+            problems.append("secrets_key is unset - client site credentials would be stored unencrypted")
+        return problems
+
+    def live_blocked_reason(self) -> str | None:
+        """Why live mode is refused, if it is."""
+        if not self.is_live or not self.legal.require_preflight:
+            return None
+        problems = self.preflight()
+        return "; ".join(problems) if problems else None
+
     def can_send_email(self) -> tuple[bool, str]:
         """Whether the transport may deliver at all. The console provider never leaves the
         machine, so it is always allowed; SMTP needs live mode and a verified domain."""
         if self.email.provider == "console":
             return True, "console provider (writes to the outbox directory, nothing is emailed)"
+        blocked = self.live_blocked_reason()
+        if blocked:
+            return False, f"preflight not passed: {blocked}"
         if not self.is_live:
             return False, "mode is dry_run"
         if not self.email.domain_verified:
@@ -152,6 +277,9 @@ class Settings(BaseSettings):
         return True  # delivery/system notices ride on the deal already being paid
 
     def can_charge(self) -> tuple[bool, str]:
+        blocked = self.live_blocked_reason()
+        if blocked:
+            return False, f"preflight not passed: {blocked}"
         if not self.is_live:
             return False, "mode is dry_run"
         if not self.autonomy.auto_send_checkout:
@@ -161,6 +289,9 @@ class Settings(BaseSettings):
         return True, "ok"
 
     def can_apply_fixes(self) -> tuple[bool, str]:
+        blocked = self.live_blocked_reason()
+        if blocked:
+            return False, f"preflight not passed: {blocked}"
         if not self.is_live:
             return False, "mode is dry_run"
         if not self.autonomy.auto_apply_fixes:

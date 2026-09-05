@@ -1,0 +1,36 @@
+{% extends "base.html" %}{% block header %}{% endblock %}
+{% block title %}About ComplianceEngineBot{% endblock %}
+{% block body %}
+<div class="card" style="max-width:760px;margin:2rem auto">
+<h1>About our crawler</h1>
+<p>If you found this page from your server logs, this explains what visited your site.</p>
+
+<h2>What it is</h2>
+<p><strong>ComplianceEngineBot</strong> is operated by {{ company.legal_name }}. It reads a small number of
+public pages on a website to check them for accessibility problems (against the WCAG 2.1 AA
+guidelines) and for whether search engines and AI assistants can read the business's details.
+We use the result to offer a service to the site's owner.</p>
+
+<h2>What it does</h2>
+<ul>
+  <li>Requests <code>robots.txt</code> first and obeys it, including <code>Crawl-delay</code>.</li>
+  <li>Reads at most a handful of pages per site, several seconds apart.</li>
+  <li>Sends only ordinary GET requests for pages that are already public.</li>
+  <li>Never attempts to log in, submit a form, or request an admin, account, checkout or
+      configuration path.</li>
+  <li>Never tries passwords, never probes for vulnerabilities, never follows links it was
+      asked not to.</li>
+</ul>
+
+<h2>How to stop it</h2>
+<p>Add this to your <code>robots.txt</code> and it will not come back:</p>
+<pre>User-agent: ComplianceEngineBot
+Disallow: /</pre>
+<p>Or email <a href="mailto:{{ company.support_email }}">{{ company.support_email }}</a> and we will
+add your domain to our permanent do-not-contact list and delete anything we hold about your site.
+Either way we will not email you.</p>
+
+<p class="muted">{{ company.legal_name }} · {{ company.postal_address }} ·
+<a href="/privacy">Privacy</a></p>
+</div>
+{% endblock %}

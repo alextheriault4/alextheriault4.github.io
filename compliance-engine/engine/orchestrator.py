@@ -9,15 +9,17 @@ from __future__ import annotations
 import logging
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import autopilot
 from .config import Settings, get_settings
 from .db import Database, utcnow
 from .fixing.verify import start_fix, verify_deal
 from .inbox.handle import process_inbound
 from .inbox.provider import EmailProvider, build_provider
-from .llm import LLM, build_llm
+from .legal import check_lead
+from .llm import LLM, LLMCapacityError, build_llm
 from .models import LeadStatus
 from .outreach.compose import compose_initial
 from .outreach.sequence import deliver_queued, schedule_followups
@@ -38,11 +40,21 @@ class Orchestrator:
 
     # -- prospecting -----------------------------------------------------------
     def add_prospects(self, prospects: list[Prospect]) -> int:
+        """Add leads we are allowed to contact. Ineligible ones are dropped here, before
+        we spend a scan on them, and recorded so the exclusion is auditable."""
         n = 0
         for p in dedupe(prospects):
             if p.email and self.db.is_suppressed(p.email):
                 continue
-            _, created = self.db.upsert_lead(**p.as_lead_row())
+            row = p.as_lead_row()
+            eligible = check_lead(row, self.settings)
+            if not eligible.ok:
+                lead_id, created = self.db.upsert_lead(**row)
+                if created:
+                    self.db.set_lead_status(lead_id, LeadStatus.EXCLUDED, eligible.reason)
+                    self.db.log_event("excluded", lead_id, reason=eligible.reason, stage="prospect")
+                continue
+            _, created = self.db.upsert_lead(**row)
             n += int(created)
         return n
 
@@ -68,7 +80,9 @@ class Orchestrator:
 
     # -- stages ---------------------------------------------------------------------
     def stage_scan(self, limit: int = 10) -> int:
-        leads = self.db.leads_by_status(LeadStatus.NEW, limit=limit)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        leads = [l for l in self.db.leads_by_status(LeadStatus.NEW, limit=limit)
+                 if not l.get("next_action_at") or l["next_action_at"] <= now]
         if not leads:
             return 0
         n = 0
@@ -77,22 +91,57 @@ class Orchestrator:
                 try:
                     result = scan_site(lead["url"], self.settings, browser)
                     scan_id = persist_scan(self.db, self.settings, lead, result)
-                    classify_after_scan(self.db, self.settings, lead["id"], scan_id)
+                    classify_after_scan(self.db, self.settings, lead["id"], scan_id,
+                                        page_text=result.aiseo_facts.get("text_sample", ""))
                     n += 1
                 except Exception as e:  # noqa: BLE001
                     self._fail(lead["id"], "scan", e)
-                    self.db.set_lead_status(lead["id"], LeadStatus.ARCHIVED, f"scan crashed: {e}")
+                    tries = int(lead.get("retry_count") or 0) + 1
+                    self.db.update("leads", lead["id"], retry_count=tries)
+                    if tries > self.settings.autopilot.scan_retry_attempts:
+                        self.db.set_lead_status(lead["id"], LeadStatus.ARCHIVED, f"scan failed {tries}x: {e}")
         return n
 
     def stage_draft(self, limit: int = 20) -> int:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         n = 0
         for lead in self.db.leads_by_status(LeadStatus.SCANNED, limit=limit):
+            if lead.get("next_action_at") and lead["next_action_at"] > now:
+                continue  # deferred waiting for model capacity
             try:
                 if compose_initial(self.db, self.settings, self.llm, lead["id"]):
                     n += 1
+            except LLMCapacityError as e:
+                autopilot.defer(self.db, self.settings, lead["id"], "draft", e)
             except Exception as e:  # noqa: BLE001
                 self._fail(lead["id"], "draft", e)
         return n
+
+    def stage_maintenance(self) -> dict[str, int]:
+        """Housekeeping that limits what we are holding: old snapshots of other people's
+        sites, and credentials for work that is already finished."""
+        import shutil
+
+        out = {"snapshots_purged": 0, "credentials_purged": 0}
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.settings.legal.snapshot_retention_days)
+        snap_root = self.settings.workdir / "snapshots"
+        if snap_root.exists():
+            for d in snap_root.iterdir():
+                if not d.is_dir():
+                    continue
+                try:
+                    mtime = datetime.fromtimestamp(d.stat().st_mtime, tz=timezone.utc)
+                except OSError:
+                    continue
+                if mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    out["snapshots_purged"] += 1
+        if self.settings.legal.delete_credentials_after_delivery:
+            done = self.db.query(
+                "SELECT DISTINCT lead_id FROM deals WHERE status IN ('verified','refunded','cancelled')")
+            for row in done:
+                out["credentials_purged"] += self.db.purge_lead_credentials(row["lead_id"])
+        return out
 
     def stage_inbound(self) -> dict[str, int]:
         try:
@@ -143,6 +192,14 @@ class Orchestrator:
     def tick(self, now: datetime | None = None) -> dict[str, Any]:
         t0 = time.monotonic()
         report: dict[str, Any] = {"started_at": utcnow()}
+        blocked = self.settings.live_blocked_reason()
+        if blocked:
+            # Configured live but not ready to be live. Keep running harmlessly (scans and
+            # drafts still happen) while every outbound gate stays shut.
+            report["live_blocked"] = blocked
+            if self.db.get_kv("preflight_warned") != blocked:
+                self.db.set_kv("preflight_warned", blocked)
+                self.db.add_notice(None, "Live mode is held until preflight passes", reason=blocked)
         if self.db.is_paused():
             report["paused"] = True
         else:
@@ -154,6 +211,8 @@ class Orchestrator:
             report["send"] = self.stage_send(now)
             report["fixes_started"] = self.stage_fix()
             report["verified"] = self.stage_verify(now)
+            report["maintenance"] = self.stage_maintenance()
+        report["open_escalations"] = len(self.db.leads_by_status(LeadStatus.NEEDS_HUMAN))
         report["seconds"] = round(time.monotonic() - t0, 1)
         self.db.set_kv("last_tick", utcnow())
         self.db.set_kv("last_tick_report", __import__("json").dumps(report))

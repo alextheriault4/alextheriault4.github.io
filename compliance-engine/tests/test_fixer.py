@@ -80,10 +80,16 @@ def test_wordpress_content_patch_and_rest_apply(settings, tmp_path):
     out, n = patch_wp_content(html, {"https://x.example/wp-content/uploads/team.jpg": "Our team"})
     assert n == 3 and 'alt="Our team"' in out and 'title="Embedded content"' in out and 'aria-label="click here: services"' in out
 
+    from cryptography.fernet import Fernet
+
+    from engine.legal import SecretBox
+
     db = Database(":memory:")
+    settings.secrets_key = Fernet.generate_key().decode()
     lead_id, _ = db.upsert_lead(domain="x.example", url="https://x.example/", platform="wordpress", source="t")
     db.set_kv(f"lead:{lead_id}:wp_user", "admin")
-    db.set_kv(f"lead:{lead_id}:wp_app_password", "abcd efgh")
+    db.set_secret(f"lead:{lead_id}:wp_app_password", "abcd efgh", SecretBox(settings.secrets_key))
+    assert "abcd" not in db.get_kv(f"lead:{lead_id}:wp_app_password")  # never at rest in the clear
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -106,7 +112,8 @@ def test_wordpress_content_patch_and_rest_apply(settings, tmp_path):
     (root / "pages" / "index.html").write_text('<html><body><img src="https://x.example/wp-content/uploads/team.jpg" alt="Our team"></body></html>')
     bundle = Bundle(root=root, pages=[{"url": "https://x.example/", "path": "index.html"}], strategy="wordpress_rest",
                     site_files={"llms.txt": "# X", "accessibility.css": "a{}", "robots.txt": "User-agent: *\n"}, header_snippet="<meta>")
-    res = apply_wordpress(db, db.get_lead(lead_id), bundle, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    res = apply_wordpress(db, db.get_lead(lead_id), bundle,
+                          client=httpx.Client(transport=httpx.MockTransport(handler)), settings=settings)
     assert res["applied"] and res["updated"] == [{"type": "pages", "id": 7, "changes": 3}]
     assert ("POST", "/wp-json/wp/v2/pages/7") in calls
     assert (root / "mu-plugin" / "compliance-engine.php").read_text().startswith("<?php")

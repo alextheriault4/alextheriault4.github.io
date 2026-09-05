@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import schemas
+from .. import autopilot, schemas
 from ..config import Settings
 from ..db import Database, utcnow
-from ..llm import LLM, LLMError, LLMRefusal
+from ..llm import LLM, LLMCapacityError, LLMError, LLMRefusal
 from ..models import DealStatus, LeadStatus, MessageStatus, Package
 from ..outreach.compliance import lint_email
 from ..outreach.compose import allowed_figures, build_context, compose_initial, to_html
@@ -80,15 +80,41 @@ def handle_one(db: Database, settings: Settings, llm: LLM, mail: InboundEmail) -
         try:
             cls = llm.structured(
                 system=CLASSIFY_SYSTEM, schema=schemas.ReplyClassification, effort="low",
+                model=getattr(settings.llm, "classify_model", None),
                 user="Classify this reply.\n\n```json\n" + json.dumps({"subject": mail.subject, "reply_text": mail.text[:4000],
                                                                        "from": mail.from_addr}, indent=1) + "\n```",
             )
+        except LLMCapacityError as e:
+            # No capacity right now. The reply is still in the thread; try again later.
+            autopilot.defer(db, settings, lead["id"], "classify_reply", e)
+            return "deferred"
         except (LLMRefusal, LLMError) as e:
             cls = schemas.ReplyClassification(intent="unclear", confidence=0.0, summary=f"classifier failed: {e}")
     db.update("messages", in_id, intent=cls.intent)
     db.log_event("reply_classified", lead["id"], message_id=in_id, intent=cls.intent, confidence=cls.confidence, summary=cls.summary)
 
     intent = cls.intent
+
+    # Anything angry, legal-sounding, or asking how we got their address gets one
+    # stand-down and permanent removal. Never an argument, never a human deciding.
+    if autopilot.enabled(settings) and autopilot.is_hostile(mail.text) and intent not in ("accept", "bounce"):
+        db.suppress(mail.from_addr, "complaint", lead["id"])
+        if lead.get("contact_email"):
+            db.suppress(lead["contact_email"], "complaint", lead["id"])
+        cancel_pending(db, lead["id"], "stood down after a hostile reply")
+        if autopilot.wants_deletion(mail.text):
+            autopilot.erase_lead_data(db, settings, lead["id"])
+        else:
+            _queue_plain_reply(db, settings, lead, token, mail, autopilot.stand_down_body(settings), kind="reply")
+            db.set_lead_status(lead["id"], LeadStatus.UNSUBSCRIBED, "stood down after a hostile reply")
+        autopilot.resolve(db, settings, lead["id"], "hostile_reply", cls.summary,
+                          f"Apologised once, suppressed {mail.from_addr} permanently and closed the file")
+        return "hostile"
+
+    if autopilot.enabled(settings) and autopilot.wants_deletion(mail.text):
+        autopilot.erase_lead_data(db, settings, lead["id"])
+        return "erasure"
+
     if intent == "unsubscribe":
         db.suppress(mail.from_addr, "unsubscribe", lead["id"])
         if lead.get("contact_email") and lead["contact_email"].lower() != mail.from_addr.lower():
@@ -115,26 +141,66 @@ def handle_one(db: Database, settings: Settings, llm: LLM, mail: InboundEmail) -
             db.update("leads", lead["id"], contact_email=cls.forwarded_to.lower(), contact_source="referral", followups_sent=0)
             db.set_lead_status(lead["id"], LeadStatus.SCANNED)
             compose_initial(db, settings, llm, lead["id"])
+        elif autopilot.enabled(settings):
+            # Nobody to forward to; guessing at another address is how you annoy people.
+            db.set_lead_status(lead["id"], LeadStatus.ARCHIVED, "wrong person and no forwarding address")
+            autopilot.resolve(db, settings, lead["id"], "wrong_person", cls.summary,
+                              f"Closed the file for {lead['domain']}: wrong contact, no forwarding address")
         else:
             db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"wrong person, no forward address: {cls.summary}")
             db.log_event("escalated", lead["id"], reason=cls.summary)
         return intent
     if lead["status"] in TERMINAL:
         return intent
-    if intent in ("objection_other", "unclear") or cls.confidence < 0.5:
-        db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"{intent}: {cls.summary}")
-        db.log_event("escalated", lead["id"], reason=cls.summary, intent=intent)
+
+    # Unclear replies get exactly one clarifying question, then the file closes. Two
+    # confused exchanges is the point where persistence turns into a complaint.
+    if intent == "unclear" or cls.confidence < 0.5:
+        if not autopilot.enabled(settings):
+            db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"{intent}: {cls.summary}")
+            db.log_event("escalated", lead["id"], reason=cls.summary, intent=intent)
+            return intent
+        asked = int(lead.get("clarify_count") or 0)
+        if asked < settings.autopilot.clarify_attempts:
+            db.update("leads", lead["id"], clarify_count=asked + 1)
+            _queue_plain_reply(db, settings, lead, token, mail,
+                               autopilot.clarify_body(lead.get("business_name")), kind="reply")
+            db.set_lead_status(lead["id"], LeadStatus.ENGAGED)
+            autopilot.resolve(db, settings, lead["id"], "unclear_reply", cls.summary,
+                              f"Asked {lead['domain']} one clarifying question")
+        else:
+            _queue_plain_reply(db, settings, lead, token, mail, autopilot.polite_close_body(), kind="reply")
+            db.suppress(mail.from_addr, "closed after unclear exchange", lead["id"])
+            db.set_lead_status(lead["id"], LeadStatus.ARCHIVED, "closed after an unclear exchange")
+            autopilot.resolve(db, settings, lead["id"], "unclear_reply", cls.summary,
+                              f"Closed the file for {lead['domain']} after a second unclear reply")
         return intent
 
-    # interested / question / objection_price / accept → the negotiation agent replies
+    # interested / question / objection_price / objection_other / accept → negotiation agent
     scan = db.latest_scan(lead["id"])
     if scan is None:
-        db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, "reply received but no scan on file")
+        # We can rescan; that is not a reason to involve anyone.
+        db.set_lead_status(lead["id"], LeadStatus.NEW, "reply received before a usable scan; rescanning")
+        autopilot.resolve(db, settings, lead["id"], "reply_without_scan", cls.summary,
+                          f"Queued {lead['domain']} for a rescan so the reply can be answered")
         return intent
-    reply = respond(db, settings, llm, lead, scan, cls, mail.text)
+    try:
+        reply = respond(db, settings, llm, lead, scan, cls, mail.text)
+    except LLMCapacityError as e:
+        autopilot.defer(db, settings, lead["id"], "negotiate", e)
+        return intent
     if reply.escalate:
-        db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"negotiation escalated: {reply.escalate_reason}")
-        db.log_event("escalated", lead["id"], reason=reply.escalate_reason, intent=intent)
+        if not autopilot.enabled(settings):
+            db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"negotiation escalated: {reply.escalate_reason}")
+            db.log_event("escalated", lead["id"], reason=reply.escalate_reason, intent=intent)
+            return intent
+        # Out of scope, or the model was unsure: decline the extra plainly and restate
+        # what we do sell. Saying "we don't do that" is always safe.
+        ctx = build_context(settings, lead, scan)
+        _queue_plain_reply(db, settings, lead, token, mail, autopilot.out_of_scope_body(settings, ctx), kind="reply")
+        db.set_lead_status(lead["id"], LeadStatus.ENGAGED)
+        autopilot.resolve(db, settings, lead["id"], "out_of_scope", reply.escalate_reason or cls.summary,
+                          f"Told {lead['domain']} we only sell the standard packages")
         return intent
     package = Package(reply.package)
     deal = open_or_create_deal(db, lead["id"], package, reply.proposed_price_cents, settings.pricing.currency)
@@ -148,6 +214,36 @@ def handle_one(db: Database, settings: Settings, llm: LLM, mail: InboundEmail) -
     else:
         db.set_lead_status(lead["id"], LeadStatus.ENGAGED)
     return intent
+
+
+def _queue_plain_reply(db: Database, settings: Settings, lead: dict[str, Any], token: str,
+                       mail: InboundEmail, body_core: str, kind: str = "reply") -> int:
+    """Queue one of the autopilot's fixed replies.
+
+    These carry no exposure figures and no offers, so the only lint that applies is the
+    footer and the forbidden-phrase list, both of which the fixed text satisfies.
+    """
+    body = "\n\n".join([
+        "Hi," if not lead.get("business_name") else f"Hi {lead['business_name']} team,",
+        body_core.strip(),
+        f"{settings.company.signer_name}\n{settings.company.name} · {settings.company.website}",
+        f"—\n{settings.company.legal_name}, {settings.company.postal_address}\n"
+        f'Reply "unsubscribe" at any time to stop hearing from us.',
+    ])
+    subject = mail.subject if mail.subject.lower().startswith("re:") else f"Re: {mail.subject}"
+    lint = lint_email(subject=subject.replace("Re: ", "", 1), body_text=body,
+                      allowed_cents=[settings.pricing.ada_cents, settings.pricing.aiseo_cents, settings.pricing.bundle_cents],
+                      postal_address=settings.company.postal_address, legal_name=settings.company.legal_name)
+    lint.problems = [p for p in lint.problems if "without the word 'estimate'" not in p]
+    lint.ok = not lint.problems
+    seq = len(db.thread(token)) + 1
+    msg_id = db.insert("messages", {
+        "lead_id": lead["id"], "thread_token": token, "direction": "out", "kind": kind, "subject": subject,
+        "body_text": body, "body_html": to_html(body), "to_addr": mail.from_addr, "from_addr": settings.company.from_email,
+        "message_id": f"<{token}.{seq}@{settings.company.reply_domain}>", "in_reply_to": mail.message_id,
+        "status": MessageStatus.QUEUED if lint.ok else MessageStatus.DRAFT, "lint": lint.as_dict(), "created_at": utcnow(),
+    })
+    return msg_id
 
 
 def _queue_reply(db: Database, settings: Settings, lead: dict[str, Any], scan: dict[str, Any], token: str,

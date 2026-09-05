@@ -16,6 +16,7 @@ from playwright.sync_api import Browser, Error as PlaywrightError, TimeoutError 
 from ..config import Settings
 from ..db import Database, utcnow
 from ..exposure import compute_exposure
+from ..legal import CrawlPolicy, check_lead, safe_to_fetch
 from ..models import LeadStatus
 from ..prospecting.discover import discover
 from .ada import Finding, ada_score, run_axe
@@ -109,22 +110,38 @@ def _fetch_text(context: Any, url: str, timeout_ms: int) -> tuple[bool, str | No
 
 
 def scan_site(url: str, settings: Settings, browser: Browser) -> ScanResult:
+    """Read a site the way a polite crawler does: identify ourselves, ask robots.txt
+    first, wait between requests, and only ever GET public pages."""
     domain = (urlparse(url).hostname or "").removeprefix("www.")
-    context = browser.new_context(user_agent=settings.scanning.user_agent, ignore_https_errors=True,
+    agent = settings.scanning.user_agent_for(settings.company.website, settings.legal.bot_info_path)
+    context = browser.new_context(user_agent=agent, ignore_https_errors=True,
                                   viewport={"width": 1366, "height": 900})
     context.set_default_timeout(settings.scanning.page_timeout_ms)
+    policy = CrawlPolicy(settings)
     pages: list[PageSnapshot] = []
     findings: list[Finding] = []
     try:
+        origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        robots_ok, robots_txt = _fetch_text(context, origin + "/robots.txt", settings.scanning.page_timeout_ms)
+        policy.load_robots(origin, robots_txt if robots_ok else None)
+        if not policy.allowed(url):
+            return ScanResult(url, domain, [], [], 0, 0, {}, robots_txt if robots_ok else None, None, None,
+                              "unknown", [], error="robots.txt disallows this crawler; site skipped")
+
         page = context.new_page()
+        policy.wait(url)
         home = _load(page, url, settings.scanning.page_timeout_ms)
         if home is None:
-            return ScanResult(url, domain, [], [], 0, 0, {}, None, None, None, "unknown", [], error="home page failed to load")
+            return ScanResult(url, domain, [], [], 0, 0, {}, robots_txt if robots_ok else None, None, None,
+                              "unknown", [], error="home page failed to load")
         pages.append(home)
         findings += run_axe(page, home.url)
 
+        # The landing URL may have redirected to a different host; re-anchor on where we are.
         origin = f"{urlparse(home.url).scheme}://{urlparse(home.url).netloc}"
-        robots_ok, robots_txt = _fetch_text(context, origin + "/robots.txt", settings.scanning.page_timeout_ms)
+        if origin not in (f"{urlparse(url).scheme}://{urlparse(url).netloc}",):
+            robots_ok, robots_txt = _fetch_text(context, origin + "/robots.txt", settings.scanning.page_timeout_ms)
+            policy.load_robots(origin, robots_txt if robots_ok else None)
         sitemap_ok, _ = _fetch_text(context, origin + "/sitemap.xml", settings.scanning.page_timeout_ms)
         if not sitemap_ok:
             sitemap_ok, _ = _fetch_text(context, origin + "/sitemap_index.xml", settings.scanning.page_timeout_ms)
@@ -137,6 +154,9 @@ def scan_site(url: str, settings: Settings, browser: Browser) -> ScanResult:
         findings += seo_findings
 
         for link in pick_internal_links(home.url, home.rendered_html, settings.scanning.max_pages_per_site - 1):
+            if not safe_to_fetch(link) or not policy.allowed(link):
+                continue
+            policy.wait(link)
             snap = _load(page, link, settings.scanning.page_timeout_ms)
             if snap is None:
                 continue
@@ -251,7 +271,8 @@ def _guess_name(title: str, domain: str) -> str:
     return domain.split(".")[0].replace("-", " ").title()
 
 
-def classify_after_scan(db: Database, settings: Settings, lead_id: int, scan_id: int) -> str:
+def classify_after_scan(db: Database, settings: Settings, lead_id: int, scan_id: int,
+                        page_text: str = "") -> str:
     """Decide the lead's next status from the scan."""
     scan = db.one("SELECT * FROM scans WHERE id = ?", (scan_id,))
     lead = db.get_lead(lead_id)
@@ -259,6 +280,13 @@ def classify_after_scan(db: Database, settings: Settings, lead_id: int, scan_id:
     if scan["status"] != "ok":
         db.set_lead_status(lead_id, LeadStatus.ARCHIVED, "scan failed")
         return LeadStatus.ARCHIVED
+    # Contact policy comes before everything: a business we may not email is not a lead,
+    # however bad its website is.
+    eligible = check_lead(lead, settings, page_text)
+    if not eligible.ok:
+        db.set_lead_status(lead_id, LeadStatus.EXCLUDED, eligible.reason)
+        db.log_event("excluded", lead_id, reason=eligible.reason)
+        return LeadStatus.EXCLUDED
     if (scan["ada_score"] or 0) >= 90 and (scan["aiseo_score"] or 0) >= 85:
         db.set_lead_status(lead_id, LeadStatus.CLEAN)
         return LeadStatus.CLEAN

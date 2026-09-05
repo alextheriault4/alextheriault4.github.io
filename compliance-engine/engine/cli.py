@@ -103,8 +103,46 @@ def cmd_simulate_payment(args: argparse.Namespace) -> None:
 
 def cmd_status(args: argparse.Namespace) -> None:
     o = _orc()
-    print(json.dumps({"mode": o.settings.mode, "paused": o.db.is_paused(), "breaker": o.db.get_kv("breaker"),
-                      "last_tick": o.db.get_kv("last_tick"), "leads": o.db.counts_by_status()}, indent=1))
+    print(json.dumps({
+        "mode": o.settings.mode, "live_blocked": o.settings.live_blocked_reason(),
+        "autopilot": o.settings.autopilot.enabled, "llm_provider": o.settings.llm.provider,
+        "paused": o.db.is_paused(), "breaker": o.db.get_kv("breaker"), "last_tick": o.db.get_kv("last_tick"),
+        "waiting_on_you": len(o.db.leads_by_status("needs_human")), "unread_notices": len(o.db.notices()),
+        "leads": o.db.counts_by_status(),
+    }, indent=1))
+
+
+def cmd_preflight(args: argparse.Namespace) -> None:
+    """Everything that must be true before real emails and real charges are allowed."""
+    s = get_settings()
+    problems = s.preflight()
+    if not problems:
+        print("preflight: ready to go live")
+        return
+    print("preflight: NOT ready. Live mode stays blocked until these are fixed:\n")
+    for p in problems:
+        print(f"  - {p}")
+    print("\nSet the CE_LEGAL__* acknowledgements only once they are actually true.")
+    sys.exit(1)
+
+
+def cmd_notices(args: argparse.Namespace) -> None:
+    o = _orc()
+    rows = o.db.notices(limit=args.limit, unread_only=not args.all)
+    for n in reversed(rows):
+        where = f" [{n['domain']}]" if n.get("domain") else ""
+        print(f"{n['created_at'][:16].replace('T', ' ')}{where} {n['detail'].get('headline', '')}")
+    if not rows:
+        print("nothing new")
+    if args.mark_read:
+        o.db.mark_notices_read()
+
+
+def cmd_erase(args: argparse.Namespace) -> None:
+    from .autopilot import erase_lead_data
+
+    o = _orc()
+    print(json.dumps(erase_lead_data(o.db, o.settings, args.lead), indent=1))
 
 
 def cmd_export_ledger(args: argparse.Namespace) -> None:
@@ -133,6 +171,12 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--lead", type=int, required=True); a.add_argument("--text", required=True); a.set_defaults(fn=cmd_simulate_reply)
     a = sub.add_parser("simulate-payment", help="mark a placeholder deal as paid"); a.add_argument("--deal", type=int, required=True); a.set_defaults(fn=cmd_simulate_payment)
     sub.add_parser("status", help="print pipeline counts").set_defaults(fn=cmd_status)
+    sub.add_parser("preflight", help="check whether it is safe and legal to go live").set_defaults(fn=cmd_preflight)
+    a = sub.add_parser("notices", help="what the autopilot handled for you")
+    a.add_argument("--all", action="store_true"); a.add_argument("--limit", type=int, default=50)
+    a.add_argument("--mark-read", action="store_true"); a.set_defaults(fn=cmd_notices)
+    a = sub.add_parser("erase", help="delete everything held about one business")
+    a.add_argument("--lead", type=int, required=True); a.set_defaults(fn=cmd_erase)
     sub.add_parser("export-ledger", help="print the ledger as CSV").set_defaults(fn=cmd_export_ledger)
     args = p.parse_args(argv)
     args.fn(args)

@@ -8,8 +8,24 @@
 <div class="card"><h3>Replies</h3><div class="kpi">{{ replies }}</div><div class="muted">{% if contacted %}{{ (100*replies/contacted)|round(1) }}% of contacted{% endif %} · engaged {{ counts.get('engaged',0) }} · not interested {{ counts.get('not_interested',0) }} · unsubscribed {{ counts.get('unsubscribed',0) }} · bounced {{ counts.get('bounced',0) }}</div></div>
 <div class="card"><h3>Deals</h3><div class="kpi">{{ fin.paid_deals }}</div><div class="muted">accepted {{ counts.get('accepted',0) }} · paid {{ counts.get('paid',0) }} · delivered {{ counts.get('delivered',0) }} · verified {{ counts.get('verified',0) }}</div></div>
 <div class="card"><h3>Net revenue</h3><div class="kpi">{{ fin.net_cents|money }}</div><div class="muted">gross {{ fin.gross_cents|money }} · tax collected {{ fin.sales_tax_collected_cents|money }}</div></div>
-<div class="card"><h3>Needs a human</h3><div class="kpi {{ 'impact-serious' if needs_human else '' }}">{{ needs_human|length }}</div><div class="muted">{{ held }} messages held for approval</div></div>
+<div class="card"><h3>Needs a human</h3><div class="kpi {{ 'impact-serious' if needs_human else '' }}">{{ needs_human|length }}</div>
+<div class="muted">{{ held }} messages held for approval{% if autopilot.enabled %} · autopilot on, so this should stay at zero{% endif %}</div></div>
 </div>
+
+{% if preflight %}
+<div class="card" style="margin-top:1rem;border-color:var(--bad)">
+<h3 style="color:var(--bad)">Not ready to go live</h3>
+<p class="muted">While any of these are outstanding, every outbound gate stays shut even if
+<code>CE_MODE=live</code>. Scanning and drafting still run.</p>
+<ul>{% for p in preflight %}<li>{{ p }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if notices %}
+<div class="card" style="margin-top:1rem"><h3>Handled for you <a href="/notices" style="font-weight:400">(all)</a></h3>
+<table>{% for n in notices %}<tr><td class="muted" style="white-space:nowrap">{{ n.created_at[5:16].replace('T',' ') }}</td>
+<td>{{ n.detail.headline }}</td><td>{% if n.lead_id %}<a href="/leads/{{ n.lead_id }}">{{ n.domain }}</a>{% endif %}</td></tr>{% endfor %}</table></div>
+{% endif %}
 
 <div class="row" style="margin-top:1rem">
 <div class="card"><h3>Controls</h3>

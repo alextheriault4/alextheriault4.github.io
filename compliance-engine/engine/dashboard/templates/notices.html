@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Notices</h1>
+<p class="muted">Things the autopilot handled on its own. Nothing here needs a decision from you —
+it is a record of what was done. Anything that genuinely needed you would be on the overview
+under &ldquo;Needs a human&rdquo;.</p>
+<p>
+  <form class="inline" method="post" action="/notices/read"><button>Mark all read</button></form>
+  <a href="/notices?all=1">Show all</a> · <a href="/notices">Unread only</a>
+</p>
+<div class="card">
+{% if not rows %}<p class="muted">Nothing new.</p>{% endif %}
+<table>
+{% for n in rows %}
+<tr>
+  <td class="muted" style="white-space:nowrap">{{ n.created_at[5:16].replace('T',' ') }}</td>
+  <td>{{ n.detail.headline }}</td>
+  <td>{% if n.lead_id %}<a href="/leads/{{ n.lead_id }}">{{ n.domain }}</a>{% endif %}</td>
+  <td class="muted">{{ n.detail.get('situation','') }} {{ n.detail.get('detail','') }}</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% endblock %}

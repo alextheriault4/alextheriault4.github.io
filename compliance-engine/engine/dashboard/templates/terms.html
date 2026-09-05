@@ -1,0 +1,35 @@
+{% extends "base.html" %}{% block header %}{% endblock %}{% block title %}Terms{% endblock %}
+{% block body %}<div class="card" style="max-width:800px;margin:2rem auto">
+<h1>Terms of service</h1>
+<p class="muted">{{ company.legal_name }} · {{ company.postal_address }}</p>
+
+<h2>What we sell</h2>
+<p>We scan small-business websites for accessibility problems (measured against WCAG 2.1/2.2 AA) and
+for whether search engines and AI assistants can read the business's information, and we fix the
+issues we report, for a flat fee. Each engagement is governed by the service agreement shown before
+payment.</p>
+
+<h2>What we do not sell</h2>
+<p>We are not a law firm and provide no legal advice. We do not sell an accessibility &ldquo;overlay&rdquo;
+or widget, and we do not offer certification. <strong>No one can guarantee that a website will not
+attract an accessibility complaint or lawsuit, and we do not claim to.</strong> Any dollar figures in
+our emails or reports are estimates from published sources, clearly labelled as such, and are not
+predictions about your business.</p>
+
+<h2>Our email</h2>
+<p>We send a small number of one-to-one business emails to US businesses whose websites we have
+scanned, offering this service. Every message identifies us, gives our postal address, and includes a
+working opt-out that we honour immediately and permanently. Reply with &ldquo;unsubscribe&rdquo; and you
+will not hear from us again; reply with &ldquo;delete&rdquo; and we will erase what we hold about you.</p>
+
+<h2>Our crawler</h2>
+<p>See <a href="/bot">the crawler page</a> for what it does and how to block it.</p>
+
+<h2>Refunds</h2>
+<p>If our verification rescan does not show the reported issues resolved, or if the work is never
+delivered, we refund in full.</p>
+
+<h2>Contact</h2>
+<p><a href="mailto:{{ company.support_email }}">{{ company.support_email }}</a></p>
+<p class="muted"><a href="/privacy">Privacy</a></p>
+</div>{% endblock %}

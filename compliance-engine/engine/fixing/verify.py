@@ -7,9 +7,10 @@ from typing import Any
 
 from playwright.sync_api import Browser
 
+from .. import autopilot
 from ..config import Settings
 from ..db import Database, utcnow
-from ..llm import LLM
+from ..llm import LLM, LLMCapacityError
 from ..models import DealStatus, FixStrategy, LeadStatus, MessageStatus
 from ..outreach.compose import to_html
 from ..scanning.runner import persist_scan, scan_site
@@ -33,12 +34,32 @@ def start_fix(db: Database, settings: Settings, llm: LLM, deal_id: int) -> int:
                                  "before_ada": baseline["ada_score"] if baseline else None,
                                  "before_aiseo": baseline["aiseo_score"] if baseline else None})
     db.update("deals", deal_id, status=DealStatus.IN_PROGRESS)
-    try:
-        bundle = build_bundle(db, settings, llm, deal_id)
-    except Exception as e:  # noqa: BLE001
-        db.update("fixes", fix_id, status="failed", error=str(e)[:500])
-        db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"fix build failed: {e}")
-        db.log_event("error", lead["id"], stage="build_bundle", error=str(e)[:500])
+    attempts = settings.autopilot.build_retry_attempts + 1 if autopilot.enabled(settings) else 1
+    bundle = None
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            bundle = build_bundle(db, settings, llm, deal_id)
+            break
+        except LLMCapacityError as e:
+            # Nothing wrong with the job; wait for capacity and pick it up next tick.
+            db.update("fixes", fix_id, status="planned", error=str(e)[:500])
+            db.update("deals", deal_id, status=DealStatus.PAID)
+            autopilot.defer(db, settings, lead["id"], "build_bundle", e)
+            return fix_id
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            db.log_event("error", lead["id"], stage="build_bundle", error=str(e)[:500], attempt=attempt)
+    if bundle is None:
+        db.update("fixes", fix_id, status="failed", error=str(last_error)[:500])
+        if autopilot.enabled(settings):
+            # We took money for work we cannot produce. Give it back before anyone has to ask.
+            autopilot.auto_refund(db, settings, deal_id, f"could not build the remediation: {last_error}")
+            queue_refund_email(db, settings, deal_id, f"we couldn't complete the work on {lead['domain']}")
+            autopilot.resolve(db, settings, lead["id"], "build_failed", str(last_error)[:300],
+                              f"Refunded {lead['domain']} automatically after the build failed")
+        else:
+            db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, f"fix build failed: {last_error}")
         return fix_id
     db.update("fixes", fix_id, status="built", strategy=bundle.strategy, bundle_path=str(bundle.root), summary=bundle.summary())
     db.log_event("fix_planned", lead["id"], fix_id=fix_id, **bundle.summary())
@@ -125,15 +146,85 @@ def verify_deal(db: Database, settings: Settings, browser: Browser, deal_id: int
         db.update("leads", lead["id"], next_action_at=None)
         db.log_event("fix_verified", lead["id"], **cmp)
         queue_report_email(db, settings, deal_id, cmp)
-    else:
-        started = datetime.fromisoformat(fix["created_at"])
-        if datetime.now(timezone.utc) - started > timedelta(days=VERIFY_FOR_DAYS):
-            db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN, "delivered fix never verified on the live site after 45 days")
-            db.update("leads", lead["id"], next_action_at=None)
+        if settings.legal.delete_credentials_after_delivery:
+            # Holding a client's site password after the job is finished is pure downside.
+            db.purge_lead_credentials(lead["id"])
+        return cmp
+
+    started = datetime.fromisoformat(fix["created_at"])
+    age_days = (datetime.now(timezone.utc) - started).days
+    deadline = settings.autopilot.auto_refund_after_days if autopilot.enabled(settings) else VERIFY_FOR_DAYS
+    if age_days > deadline:
+        db.update("leads", lead["id"], next_action_at=None)
+        if autopilot.enabled(settings):
+            # They never put the changes live. Refund rather than hold their money and
+            # let it curdle into a dispute.
+            autopilot.auto_refund(db, settings, deal_id, f"changes never went live after {age_days} days")
+            queue_refund_email(db, settings, deal_id,
+                               f"the changes for {lead['domain']} never went live, so we've refunded you")
+            autopilot.resolve(db, settings, lead["id"], "never_verified", f"{age_days} days since delivery",
+                              f"Refunded {lead['domain']} automatically and closed the file")
         else:
-            nxt = datetime.now(timezone.utc) + timedelta(days=VERIFY_EVERY_DAYS)
-            db.update("leads", lead["id"], next_action_at=nxt.isoformat(timespec="seconds"))
+            db.set_lead_status(lead["id"], LeadStatus.NEEDS_HUMAN,
+                               f"delivered fix never verified on the live site after {age_days} days")
+        return cmp
+
+    # Still inside the window: nudge on schedule, then keep quietly re-checking.
+    if autopilot.enabled(settings):
+        for day in settings.autopilot.verify_reminder_days:
+            marker = f"lead:{lead['id']}:reminded_{day}"
+            if age_days >= day and not db.get_kv(marker):
+                db.set_kv(marker, utcnow())
+                queue_reminder_email(db, settings, deal_id, day)
+                break
+    nxt = datetime.now(timezone.utc) + timedelta(days=VERIFY_EVERY_DAYS)
+    db.update("leads", lead["id"], next_action_at=nxt.isoformat(timespec="seconds"))
     return cmp
+
+
+def _queue_client_email(db: Database, settings: Settings, deal_id: int, subject: str, core: str) -> int:
+    """Transactional note to a paying client; no offers, no estimates, no lint edge cases."""
+    deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
+    lead = db.get_lead(deal["lead_id"])
+    thread = db.thread_for_lead(lead["id"])
+    token = thread[0]["thread_token"] if thread else "direct"
+    body = "\n\n".join([
+        f"Hi {lead.get('business_name') or 'there'},",
+        core,
+        f"{settings.company.signer_name}\n{settings.company.name} · {settings.company.website}",
+        f"—\n{settings.company.legal_name}, {settings.company.postal_address}\n"
+        f'Reply "unsubscribe" at any time to stop hearing from us.',
+    ])
+    return db.insert("messages", {
+        "lead_id": lead["id"], "thread_token": token, "direction": "out", "kind": "delivery", "subject": subject,
+        "body_text": body, "body_html": to_html(body), "to_addr": lead["contact_email"],
+        "from_addr": settings.company.from_email,
+        "message_id": f"<{token}.{len(thread) + 1}@{settings.company.reply_domain}>",
+        "status": MessageStatus.QUEUED, "lint": {"ok": True, "problems": []}, "created_at": utcnow(),
+    })
+
+
+def queue_reminder_email(db: Database, settings: Settings, deal_id: int, day: int) -> int:
+    deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
+    lead = db.get_lead(deal["lead_id"])
+    return _queue_client_email(
+        db, settings, deal_id, f"Checking in on the changes for {lead['domain']}",
+        f"We sent the remediation for {lead['domain']} about {day} days ago and our rescan still sees the original "
+        "version live, so it looks like the changes haven't been published yet. If you'd like us to apply them for "
+        "you, reply with access and we'll take care of it. If you'd rather not go ahead at all, say so and we'll "
+        "refund you, no hard feelings.",
+    )
+
+
+def queue_refund_email(db: Database, settings: Settings, deal_id: int, why: str) -> int:
+    deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
+    lead = db.get_lead(deal["lead_id"])
+    return _queue_client_email(
+        db, settings, deal_id, f"Refund issued for {lead['domain']}",
+        f"A quick note that {why}, so we've refunded your payment in full. It should appear on your statement "
+        "within a few business days. The report and the change bundle are yours to keep and use whenever you like. "
+        "Sorry it didn't work out this time.",
+    )
 
 
 def queue_report_email(db: Database, settings: Settings, deal_id: int, cmp: dict[str, Any]) -> int:

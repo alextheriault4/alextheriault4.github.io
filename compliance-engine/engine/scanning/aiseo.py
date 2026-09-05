@@ -204,6 +204,9 @@ def audit_home(
         add("slow-load", "moderate", load_ms=load_ms)
 
     facts = {
+        # A slice of the page's own words: used to place the business geographically for the
+        # contact policy, and as source material for the fixer's copy.
+        "text_sample": rendered_text[:20_000],
         "title": title, "meta_description": desc, "h1": h1s[:3], "jsonld_types": sorted(types),
         "robots": robots, "sitemap_ok": sitemap_ok, "llms_txt_ok": llms_txt_ok, "word_count": rr, "raw_word_count": rw,
         "phone_found": bool(phone), "address_found": bool(address), "load_ms": load_ms,

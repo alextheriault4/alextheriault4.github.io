@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS leads (
   needs_human_reason TEXT,
   next_action_at TEXT,
   followups_sent INTEGER NOT NULL DEFAULT 0,
+  clarify_count INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -216,8 +218,52 @@ class Database:
             (key, value),
         )
 
+    def delete_kv(self, key: str) -> None:
+        self._conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+
     def is_paused(self) -> bool:
         return self.get_kv("paused", "0") == "1"
+
+    # -- credentials (encrypted at rest) --------------------------------------
+    def set_secret(self, key: str, value: str, box: Any) -> None:
+        """Store a client credential. Raises if no encryption key is configured."""
+        self.set_kv(key, box.encrypt(value))
+
+    def get_secret(self, key: str, box: Any) -> str | None:
+        return box.decrypt(self.get_kv(key))
+
+    def purge_lead_credentials(self, lead_id: int) -> int:
+        """Delete every stored credential for a lead once the work is delivered."""
+        from .legal import is_secret
+
+        rows = self.query("SELECT key FROM kv WHERE key LIKE ?", (f"lead:{lead_id}:%",))
+        n = 0
+        for row in rows:
+            if is_secret(row["key"]):
+                self.delete_kv(row["key"])
+                n += 1
+        if n:
+            self.log_event("status_changed", lead_id, note=f"purged {n} stored credential(s) after delivery")
+        return n
+
+    # -- notices: things you should know about, but nothing to decide -----------
+    def add_notice(self, lead_id: int | None, headline: str, **detail: Any) -> int:
+        return self.log_event("notice", lead_id, headline=headline, **detail)
+
+    def notices(self, limit: int = 50, unread_only: bool = True) -> list[dict[str, Any]]:
+        sql = ("SELECT e.*, l.domain FROM events e LEFT JOIN leads l ON l.id = e.lead_id "
+               "WHERE e.kind = 'notice'")
+        if unread_only:
+            sql += " AND e.id > COALESCE((SELECT CAST(value AS INTEGER) FROM kv WHERE key='notices_read_through'), 0)"
+        rows = self.query(sql + " ORDER BY e.id DESC LIMIT ?", (limit,))
+        for r in rows:
+            r["detail"] = json.loads(r["detail"]) if r.get("detail") else {}
+        return rows
+
+    def mark_notices_read(self) -> None:
+        row = self.one("SELECT MAX(id) AS m FROM events WHERE kind='notice'")
+        if row and row["m"]:
+            self.set_kv("notices_read_through", str(row["m"]))
 
     # -- events ----------------------------------------------------------------
     def log_event(self, event: str, lead_id: int | None = None, **detail: Any) -> int:

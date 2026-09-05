@@ -1,15 +1,27 @@
 """Model access.
 
-``ClaudeLLM`` is the production client (official Anthropic SDK, structured outputs via
-``beta.messages.parse``, adaptive thinking, server-side refusal fallbacks).
-``FakeLLM`` is a deterministic stand-in used by the test-suite and by dry runs on
-machines without an API key. Both satisfy the same tiny ``LLM`` protocol so the rest
-of the engine never knows which one it has.
+Three interchangeable providers behind one tiny ``LLM`` protocol:
+
+* ``ClaudeCodeLLM`` (default) shells out to the Claude Code CLI in headless mode, so
+  every call is billed against your **Claude subscription** instead of a metered API
+  key. The child process runs with ``ANTHROPIC_API_KEY`` removed so the CLI falls back
+  to your Claude Code login, with a replaced system prompt and no tools, which keeps the
+  cached prefix small and byte-identical between calls.
+* ``ClaudeLLM`` talks to the Anthropic API directly with an API key.
+* ``FakeLLM`` is a deterministic stand-in for tests and keyless dry runs.
+
+Errors are split deliberately. ``LLMCapacityError`` (rate limit, subscription usage
+limit, overload, budget cap) means *come back later*: callers defer the lead instead of
+escalating it to a human, because nothing is actually wrong with the lead.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
+import time
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel
@@ -25,12 +37,21 @@ class LLMError(RuntimeError):
 
 
 class LLMRefusal(LLMError):
-    """The model declined the request; the caller should escalate to a human, not retry."""
+    """The model declined the request. Callers fall back to a deterministic template."""
+
+
+class LLMCapacityError(LLMError):
+    """Temporary: rate limit, subscription usage limit, overload, or budget cap.
+
+    The work is fine, there is just no capacity right now. Callers must retry later
+    rather than treat the lead as broken.
+    """
 
 
 class LLM(Protocol):
-    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None) -> T: ...
-    def text(self, *, system: str, user: str, effort: str | None = None) -> str: ...
+    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None,
+                   model: str | None = None) -> T: ...
+    def text(self, *, system: str, user: str, effort: str | None = None, model: str | None = None) -> str: ...
 
 
 class ClaudeLLM:
@@ -45,10 +66,11 @@ class ClaudeLLM:
         # Stable prefix first so repeated calls with the same system prompt hit the cache.
         return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
-    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None) -> T:
+    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None,
+                   model: str | None = None) -> T:
         try:
             resp = self.client.beta.messages.parse(
-                model=self.settings.model,
+                model=model or self.settings.model,
                 max_tokens=self.settings.max_tokens,
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
@@ -58,21 +80,23 @@ class ClaudeLLM:
                 output_config={"effort": effort or self.settings.effort},
             )
         except self._anthropic.RateLimitError as e:
-            raise LLMError(f"rate limited: {e}") from e
+            raise LLMCapacityError(f"rate limited: {e}") from e
         except self._anthropic.APIStatusError as e:
+            if e.status_code in (429, 529) or e.status_code >= 500:
+                raise LLMCapacityError(f"api error {e.status_code}: {e.message}") from e
             raise LLMError(f"api error {e.status_code}: {e.message}") from e
         except self._anthropic.APIConnectionError as e:
-            raise LLMError(f"connection error: {e}") from e
+            raise LLMCapacityError(f"connection error: {e}") from e
         if resp.stop_reason == "refusal":
             raise LLMRefusal(getattr(getattr(resp, "stop_details", None), "explanation", "refused"))
         if resp.parsed_output is None:
             raise LLMError("model returned no parsed output")
         return resp.parsed_output
 
-    def text(self, *, system: str, user: str, effort: str | None = None) -> str:
+    def text(self, *, system: str, user: str, effort: str | None = None, model: str | None = None) -> str:
         try:
             resp = self.client.beta.messages.create(
-                model=self.settings.model,
+                model=model or self.settings.model,
                 max_tokens=self.settings.max_tokens,
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
@@ -81,12 +105,194 @@ class ClaudeLLM:
                 output_config={"effort": effort or self.settings.effort},
             )
         except self._anthropic.APIStatusError as e:
+            if e.status_code in (429, 529) or e.status_code >= 500:
+                raise LLMCapacityError(f"api error {e.status_code}: {e.message}") from e
             raise LLMError(f"api error {e.status_code}: {e.message}") from e
         except self._anthropic.APIConnectionError as e:
-            raise LLMError(f"connection error: {e}") from e
+            raise LLMCapacityError(f"connection error: {e}") from e
         if resp.stop_reason == "refusal":
             raise LLMRefusal("refused")
         return "".join(b.text for b in resp.content if b.type == "text")
+
+
+# --------------------------------------------------------------------------------------
+# Claude Code CLI (subscription credits)
+# --------------------------------------------------------------------------------------
+
+CAPACITY_SIGNALS = (
+    "usage limit", "rate limit", "rate_limit", "overloaded", "capacity", "try again later",
+    "quota", "exceeded your", "budget", "429", "529", "temporarily unavailable", "upgrade to",
+)
+
+
+def inline_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """Pydantic's JSON schema with ``$defs`` inlined and objects closed.
+
+    ``--json-schema`` wants one self-contained schema, so nested models (an FAQ item
+    inside a business profile) can't arrive as ``$ref`` pointers.
+    """
+    raw = schema.model_json_schema()
+    defs = raw.pop("$defs", {})
+
+    def resolve(node: Any, depth: int = 0) -> Any:
+        if depth > 24:
+            return node
+        if isinstance(node, list):
+            return [resolve(x, depth + 1) for x in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            name = str(node["$ref"]).rsplit("/", 1)[-1]
+            target = defs.get(name)
+            if target is None:
+                return {"type": "object"}
+            return {**resolve(target, depth + 1), **{k: v for k, v in node.items() if k != "$ref"}}
+        out = {k: resolve(v, depth + 1) for k, v in node.items()}
+        # Optional[...] renders as anyOf[..., null]; flatten so strict validation accepts it.
+        if "anyOf" in out:
+            variants = [v for v in out["anyOf"] if v.get("type") != "null"]
+            if len(variants) == 1:
+                nullable = len(variants) != len(out["anyOf"])
+                out.pop("anyOf")
+                out.update(variants[0])
+                if nullable and isinstance(out.get("type"), str):
+                    out["type"] = [out["type"], "null"]
+        if out.get("type") == "object" and "properties" in out:
+            out.setdefault("additionalProperties", False)
+            out.setdefault("required", sorted(out["properties"]))
+        return out
+
+    return resolve(raw)
+
+
+class ClaudeCodeLLM:
+    """Runs prompts through the Claude Code CLI so they draw on your subscription."""
+
+    def __init__(self, settings: LLMSettings):
+        self.settings = settings
+        self.binary = shutil.which(settings.claude_binary) or settings.claude_binary
+        self.last_cost_usd = 0.0
+        self.total_cost_usd = 0.0
+
+    def available(self) -> bool:
+        return bool(shutil.which(self.settings.claude_binary))
+
+    def _env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        # The whole point: make the CLI authenticate as you, not as an API key.
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            env.pop(key, None)
+        return env
+
+    def _run(self, *, system: str, user: str, model: str, effort: str,
+             schema: type[BaseModel] | None) -> dict[str, Any]:
+        cmd = [
+            self.binary, "-p", user,
+            "--output-format", "json",
+            "--model", model,
+            "--effort", effort,
+            # Replace Claude Code's own system prompt and drop its tools, settings, MCP
+            # servers and session files: less context per call, and an identical cached
+            # prefix so every call after the first is a cache read.
+            "--system-prompt", system,
+            "--restricted",
+            "--strict-mcp-config",
+            "--setting-sources", "",
+            "--no-session-persistence",
+            "--permission-prompts", "none",
+            "--max-turns", "1",
+            "--max-budget-usd", str(self.settings.max_budget_usd),
+        ]
+        if schema is not None:
+            cmd += ["--json-schema", json.dumps(inline_schema(schema))]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=self.settings.timeout_seconds,
+                stdin=subprocess.DEVNULL, env=self._env(),
+            )
+        except FileNotFoundError as e:
+            raise LLMError(f"claude CLI not found at {self.binary!r}; set CE_LLM__CLAUDE_BINARY") from e
+        except subprocess.TimeoutExpired as e:
+            raise LLMCapacityError(f"claude CLI timed out after {self.settings.timeout_seconds}s") from e
+
+        payload = self._last_json_object(proc.stdout)
+        if payload is None:
+            blob = (proc.stderr or proc.stdout or "").strip()
+            if self._looks_like(blob, CAPACITY_SIGNALS):
+                raise LLMCapacityError(f"claude CLI unavailable: {blob[:300]}")
+            raise LLMError(f"claude CLI returned no JSON (exit {proc.returncode}): {blob[:300]}")
+        self.last_cost_usd = float(payload.get("total_cost_usd") or 0.0)
+        self.total_cost_usd += self.last_cost_usd
+        if payload.get("is_error") or payload.get("subtype") not in (None, "success"):
+            subtype = str(payload.get("subtype") or "")
+            detail = str(payload.get("result") or subtype)
+            if subtype.startswith("error_max_") or self._looks_like(detail, CAPACITY_SIGNALS):
+                raise LLMCapacityError(f"claude CLI: {detail[:300]}")
+            raise LLMError(f"claude CLI error: {detail[:300]}")
+        return payload
+
+    @staticmethod
+    def _looks_like(text: str, signals: tuple[str, ...]) -> bool:
+        low = (text or "").lower()
+        return any(sig in low for sig in signals)
+
+    @staticmethod
+    def _last_json_object(stdout: str) -> dict[str, Any] | None:
+        for line in reversed((stdout or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None,
+                   model: str | None = None) -> T:
+        last: Exception | None = None
+        for attempt in range(self.settings.max_attempts):
+            try:
+                payload = self._run(system=system, user=user, model=model or self.settings.model,
+                                    effort=effort or self.settings.effort, schema=schema)
+            except LLMCapacityError:
+                raise  # never burn retries on a capacity problem; the caller defers instead
+            except LLMError as e:
+                last = e
+                time.sleep(min(2 ** attempt, 8))
+                continue
+            data = payload.get("structured_output")
+            if data is None:
+                data = self._salvage(payload.get("result"))
+            if data is None:
+                last = LLMError("claude CLI returned no structured output")
+                continue
+            try:
+                return schema.model_validate(data)
+            except Exception as e:  # noqa: BLE001 - schema drift is retryable
+                last = LLMError(f"structured output failed validation: {e}")
+                continue
+        raise last or LLMError("claude CLI produced nothing usable")
+
+    @staticmethod
+    def _salvage(result: Any) -> dict[str, Any] | None:
+        """Pull a JSON object out of a plain-text result, if that is all we got."""
+        if isinstance(result, dict):
+            return result
+        if not isinstance(result, str):
+            return None
+        for candidate in (result, *re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", result, re.S)):
+            try:
+                parsed = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    def text(self, *, system: str, user: str, effort: str | None = None, model: str | None = None) -> str:
+        payload = self._run(system=system, user=user, model=model or self.settings.model,
+                            effort=effort or self.settings.effort, schema=None)
+        return str(payload.get("result") or "")
 
 
 # --------------------------------------------------------------------------------------
@@ -119,7 +325,8 @@ class FakeLLM:
     def enqueue(self, response: BaseModel) -> None:
         self.canned.setdefault(type(response).__name__, []).append(response)
 
-    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None) -> T:
+    def structured(self, *, system: str, user: str, schema: type[T], effort: str | None = None,
+                   model: str | None = None) -> T:
         self.calls.append((schema.__name__, user))
         queue = self.canned.get(schema.__name__)
         if queue:
@@ -130,7 +337,7 @@ class FakeLLM:
             raise LLMError(f"FakeLLM has no handler for {schema.__name__}")
         return handler(ctx, user)
 
-    def text(self, *, system: str, user: str, effort: str | None = None) -> str:
+    def text(self, *, system: str, user: str, effort: str | None = None, model: str | None = None) -> str:
         self.calls.append(("text", user))
         return "OK"
 
@@ -261,4 +468,13 @@ class FakeLLM:
 def build_llm(settings: LLMSettings) -> LLM:
     if settings.provider == "fake":
         return FakeLLM(settings)
+    if settings.provider == "claude_code":
+        llm = ClaudeCodeLLM(settings)
+        if not llm.available():
+            raise LLMError(
+                f"CE_LLM__PROVIDER=claude_code but the {settings.claude_binary!r} CLI is not on PATH. "
+                "Install Claude Code and run `claude` once to sign in, or set "
+                "CE_LLM__PROVIDER=claude with an ANTHROPIC_API_KEY."
+            )
+        return llm
     return ClaudeLLM(settings)

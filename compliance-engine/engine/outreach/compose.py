@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import schemas
+from .. import autopilot, schemas
 from ..config import Settings
 from ..db import Database, utcnow
 from ..exposure import money
-from ..llm import LLM, LLMError, LLMRefusal
+from ..legal import check_lead
+from ..llm import LLM, LLMCapacityError, LLMError, LLMRefusal
 from ..models import LeadStatus, MessageStatus, Package
 from .compliance import footer, lint_email, new_thread_token
 
@@ -96,8 +97,17 @@ def to_html(text: str) -> str:
     return "<div style=\"font-family:system-ui,sans-serif;font-size:15px;line-height:1.5;color:#111\">" + "".join(paras) + "</div>"
 
 
+DEFAULT_SUBJECT = "A few fixable issues on {domain}"
+
+
 def compose_initial(db: Database, settings: Settings, llm: LLM, lead_id: int) -> int | None:
-    """Draft the first email for a scanned lead. Returns the message id, or None if it can't be pitched."""
+    """Draft the first email for a scanned lead.
+
+    A draft that fails the compliance lint is not a problem for a human: the lint's own
+    complaints go back to the model, and if that still doesn't produce a clean email we
+    send a fixed template built only from pre-approved sentences and figures. The only
+    outcomes are "queued" and "deferred because there was no model capacity".
+    """
     lead = db.get_lead(lead_id)
     scan = db.latest_scan(lead_id)
     if not lead or not scan or not lead.get("contact_email"):
@@ -105,25 +115,58 @@ def compose_initial(db: Database, settings: Settings, llm: LLM, lead_id: int) ->
     if db.is_suppressed(lead["contact_email"]):
         db.set_lead_status(lead_id, LeadStatus.UNSUBSCRIBED, "address suppressed")
         return None
+    eligible = check_lead(lead, settings, (scan.get("aiseo_summary") or {}).get("facts", {}).get("text_sample", ""))
+    if not eligible.ok:
+        db.set_lead_status(lead_id, LeadStatus.EXCLUDED, eligible.reason)
+        db.log_event("excluded", lead_id, reason=eligible.reason)
+        return None
+
     ctx = build_context(settings, lead, scan)
     token = new_thread_token()
-    user = "Write the first email for this business.\n\n```json\n" + json.dumps(ctx, indent=1) + "\n```"
-    try:
-        draft = llm.structured(system=SYSTEM_PROMPT, user=user, schema=schemas.OutreachDraft, effort="medium")
-    except LLMRefusal as e:
-        db.set_lead_status(lead_id, LeadStatus.NEEDS_HUMAN, f"model refused to draft: {e}")
-        db.log_event("escalated", lead_id, reason=str(e))
-        return None
-    except LLMError as e:
-        db.log_event("error", lead_id, stage="compose_initial", error=str(e))
-        return None
-    paragraphs = [draft.opening, draft.findings_paragraph, draft.exposure_paragraph, draft.offer_paragraph, draft.call_to_action]
-    body = assemble_body(settings, lead, scan, paragraphs, token, has_estimates=True)
-    lint = lint_email(subject=draft.subject, body_text=body, allowed_cents=allowed_figures(ctx),
-                      postal_address=settings.company.postal_address, legal_name=settings.company.legal_name)
+    base_user = "Write the first email for this business.\n\n```json\n" + json.dumps(ctx, indent=1) + "\n```"
+    allowed = allowed_figures(ctx)
+
+    def build(subject: str, paragraphs: list[str]) -> tuple[str, str, Any]:
+        body = assemble_body(settings, lead, scan, paragraphs, token, has_estimates=True)
+        return subject, body, lint_email(subject=subject, body_text=body, allowed_cents=allowed,
+                                         postal_address=settings.company.postal_address,
+                                         legal_name=settings.company.legal_name)
+
+    subject = body = None
+    lint = None
+    attempts = settings.autopilot.lint_repair_attempts if autopilot.enabled(settings) else 0
+    user = base_user
+    for attempt in range(attempts + 1):
+        try:
+            draft = llm.structured(system=SYSTEM_PROMPT, user=user, schema=schemas.OutreachDraft, effort="medium")
+        except LLMCapacityError as e:
+            autopilot.defer(db, settings, lead_id, "compose_initial", e)
+            return None
+        except (LLMRefusal, LLMError) as e:
+            db.log_event("error", lead_id, stage="compose_initial", error=str(e)[:300], attempt=attempt)
+            break  # fall through to the template
+        subject, body, lint = build(draft.subject.strip(), [
+            draft.opening, draft.findings_paragraph, draft.exposure_paragraph,
+            draft.offer_paragraph, draft.call_to_action,
+        ])
+        if lint.ok:
+            break
+        db.log_event("email_lint_failed", lead_id, problems=lint.problems, attempt=attempt)
+        if attempt < attempts:
+            user = base_user + "\n\n" + autopilot.repair_prompt(lint.problems)
+
+    if lint is None or not lint.ok:
+        # The fixed template: dull sentences, pre-approved figures, passes by construction.
+        subject, body, lint = build(DEFAULT_SUBJECT.format(domain=lead["domain"]),
+                                    autopilot.safe_outreach_paragraphs(ctx))
+        if lint.ok and autopilot.enabled(settings):
+            autopilot.resolve(db, settings, lead_id, "draft_failed_lint",
+                              "; ".join((lint.problems or ["model draft rejected"])[:3]),
+                              f"Sent the standard template to {lead['domain']} instead of the generated draft")
+
     msg_id = db.insert("messages", {
         "lead_id": lead_id, "thread_token": token, "direction": "out", "kind": "initial",
-        "subject": draft.subject.strip(), "body_text": body, "body_html": to_html(body), "to_addr": lead["contact_email"],
+        "subject": subject, "body_text": body, "body_html": to_html(body), "to_addr": lead["contact_email"],
         "from_addr": settings.company.from_email, "message_id": f"<{token}.1@{settings.company.reply_domain}>",
         "status": MessageStatus.QUEUED if lint.ok else MessageStatus.DRAFT, "lint": lint.as_dict(), "created_at": utcnow(),
     })
@@ -131,8 +174,10 @@ def compose_initial(db: Database, settings: Settings, llm: LLM, lead_id: int) ->
         db.set_lead_status(lead_id, LeadStatus.QUEUED)
         db.log_event("email_drafted", lead_id, message_id=msg_id, package=ctx["recommended_package"])
     else:
-        db.set_lead_status(lead_id, LeadStatus.NEEDS_HUMAN, "draft failed lint: " + "; ".join(lint.problems))
-        db.log_event("email_lint_failed", lead_id, message_id=msg_id, problems=lint.problems)
+        # Only reachable if the fixed template itself fails, which means a misconfiguration
+        # (missing postal address, say) rather than anything about this lead.
+        autopilot.escalate(db, settings, lead_id, "even the standard template fails the lint: "
+                           + "; ".join(lint.problems))
     return msg_id
 
 

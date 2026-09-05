@@ -140,8 +140,38 @@ def test_send_window_and_daily_cap(scanned_lead, settings):
     assert deliver_queued(db, settings, provider, now=MONDAY_NOON_UTC)["sent"] == 1
 
 
-def test_hostile_reply_escalates(scanned_lead, settings):
+def test_hostile_reply_stands_down_without_asking_a_human(scanned_lead, settings):
+    """Angry or legal-sounding replies get one apology and permanent removal, not an argument."""
     db, lead_id = scanned_lead
+    llm = FakeLLM()
+    provider = ConsoleProvider(settings.workdir)
+    compose_initial(db, settings, llm, lead_id)
+    deliver_queued(db, settings, provider, now=MONDAY_NOON_UTC)
+    _reply(provider, db, lead_id, "This is a scam and I am forwarding it to my attorney.")
+    stats = process_inbound(db, settings, llm, provider)
+    assert stats.get("hostile") == 1, stats
+
+    lead = db.get_lead(lead_id)
+    assert lead["status"] == "unsubscribed"
+    assert db.is_suppressed(lead["contact_email"])
+    # Exactly one short, non-argumentative reply, and nothing about price or lawsuits.
+    out = [m for m in db.thread_for_lead(lead_id) if m["direction"] == "out"]
+    stand_down = out[-1]
+    assert stand_down["status"] == "queued" and "sorry" in stand_down["body_text"].lower()
+    assert "$" not in stand_down["body_text"].split("\n—\n")[0]
+    # Nothing is waiting on a human.
+    assert not db.leads_by_status("needs_human")
+    assert db.query("SELECT 1 FROM events WHERE kind='auto_resolved'")
+    assert db.notices()
+
+    # Follow-ups can never resume for this address.
+    assert schedule_followups(db, settings, now=MONDAY_NOON_UTC + timedelta(days=30)) == 0
+    assert compose_initial(db, settings, llm, lead_id) is None
+
+
+def test_hostile_reply_escalates_when_autopilot_is_off(scanned_lead, settings):
+    db, lead_id = scanned_lead
+    settings.autopilot.enabled = False
     llm = FakeLLM()
     provider = ConsoleProvider(settings.workdir)
     compose_initial(db, settings, llm, lead_id)

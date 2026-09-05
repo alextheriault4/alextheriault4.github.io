@@ -22,7 +22,10 @@
 <input type="text" name="wp_url" placeholder="WordPress URL" value="{{ creds.wp_url or '' }}"><input type="text" name="wp_user" placeholder="WP user" value="{{ creds.wp_user or '' }}" style="margin-top:.3rem">
 <input type="password" name="wp_app_password" placeholder="WP application password" style="margin-top:.3rem">
 <input type="text" name="github_repo" placeholder="GitHub repo owner/name" value="{{ creds.github_repo or '' }}" style="margin-top:.3rem"><input type="text" name="github_subdir" placeholder="site subdir in repo (optional)" value="{{ creds.github_subdir or '' }}" style="margin-top:.3rem">
-<button style="margin-top:.4rem">Save</button></form></div>
+<button style="margin-top:.4rem">Save</button></form>
+<p class="muted">Passwords are encrypted at rest and deleted once the work is verified. They are never shown here again.</p>
+<form method="post" action="/leads/{{ lead.id }}/erase" onsubmit="return confirm('Erase all stored data for this business? This cannot be undone.')">
+<button class="danger">Erase all data for this business</button></form></div>
 </div>
 
 {% if deals %}<h2>Deals</h2><div class="card"><table><tr><th>#</th><th>Package</th><th>Price</th><th>Status</th><th>Checkout</th><th>Paid</th><th></th></tr>

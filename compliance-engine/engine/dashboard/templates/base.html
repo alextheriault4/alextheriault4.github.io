@@ -27,7 +27,7 @@ h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.6rem}
 <body>
 {% block header %}
 <header class="top">
-<a href="/">Overview</a><a href="/leads">Leads</a><a href="/outbox">Outbox</a><a href="/finance">Finance</a>
+<a href="/">Overview</a><a href="/leads">Leads</a><a href="/outbox">Outbox</a><a href="/notices">Notices</a><a href="/finance">Finance</a>
 <span class="spacer"></span>
 <span class="badge {{ 'warn' if mode == 'dry_run' else 'ok' }}">{{ mode }}</span>
 {% if paused %}<span class="badge bad">paused</span>{% endif %}

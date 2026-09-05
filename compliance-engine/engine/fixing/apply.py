@@ -15,8 +15,9 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
-from ..config import Settings
+from ..config import Settings, get_settings
 from ..db import Database, utcnow
+from ..legal import SecretBox
 from ..models import FixStrategy
 from .build import Bundle
 
@@ -25,7 +26,7 @@ def apply_bundle(db: Database, settings: Settings, deal_id: int, bundle: Bundle,
     deal = db.one("SELECT * FROM deals WHERE id=?", (deal_id,))
     lead = db.get_lead(deal["lead_id"])
     if bundle.strategy == FixStrategy.WORDPRESS_REST:
-        return apply_wordpress(db, lead, bundle, client)
+        return apply_wordpress(db, lead, bundle, client, settings)
     if bundle.strategy == FixStrategy.GITHUB_PR:
         return apply_github(db, settings, lead, bundle, client)
     return {"applied": False, "reason": f"strategy {bundle.strategy} is delivery-only"}
@@ -35,9 +36,9 @@ def apply_bundle(db: Database, settings: Settings, deal_id: int, bundle: Bundle,
 # WordPress
 # ---------------------------------------------------------------------------
 
-def _wp_auth(db: Database, lead: dict[str, Any]) -> tuple[str, str]:
+def _wp_auth(db: Database, lead: dict[str, Any], settings: Settings) -> tuple[str, str]:
     user = db.get_kv(f"lead:{lead['id']}:wp_user") or ""
-    pw = db.get_kv(f"lead:{lead['id']}:wp_app_password") or ""
+    pw = db.get_secret(f"lead:{lead['id']}:wp_app_password", SecretBox(settings.secrets_key)) or ""
     if not (user and pw):
         raise RuntimeError("no WordPress credentials on file for this lead")
     return user, pw
@@ -64,8 +65,9 @@ def patch_wp_content(content_html: str, alt_text: dict[str, str]) -> tuple[str, 
     return str(soup), n
 
 
-def apply_wordpress(db: Database, lead: dict[str, Any], bundle: Bundle, client: httpx.Client | None = None) -> dict[str, Any]:
-    user, pw = _wp_auth(db, lead)
+def apply_wordpress(db: Database, lead: dict[str, Any], bundle: Bundle, client: httpx.Client | None = None,
+                    settings: Settings | None = None) -> dict[str, Any]:
+    user, pw = _wp_auth(db, lead, settings or get_settings())
     base = db.get_kv(f"lead:{lead['id']}:wp_url") or lead["url"].rstrip("/")
     base = re.sub(r"/(index\.\w+)?$", "", base)
     client = client or httpx.Client(timeout=30, trust_env=True)
@@ -137,7 +139,7 @@ add_filter('robots_txt', function ($output) {{
 
 def apply_github(db: Database, settings: Settings, lead: dict[str, Any], bundle: Bundle, client: httpx.Client | None = None) -> dict[str, Any]:
     repo = db.get_kv(f"lead:{lead['id']}:github_repo") or ""
-    token = db.get_kv("github_token") or ""
+    token = db.get_secret("github_token", SecretBox(settings.secrets_key)) or ""
     if not (repo and token):
         raise RuntimeError("github repo or token missing")
     subdir = (db.get_kv(f"lead:{lead['id']}:github_subdir") or "").strip("/")
