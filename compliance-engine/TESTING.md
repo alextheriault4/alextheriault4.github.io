@@ -106,6 +106,12 @@ Takes 10–30 seconds. It opens headless Chromium, fetches your `robots.txt` fir
 it, runs axe-core over your pages, and checks the AI-search signals. `status` should show
 `"leads": {"scanned": 1}`.
 
+The scan also works out **how we would change the site**. Your site is on GitHub Pages, so
+it should come back as `direct` / `github_pr` with the repository worked out from the
+domain — that is the case where the customer grants us nothing at all. If a lead comes back
+`not_fixable`, that is the gate doing its job: we do not email people whose sites we could
+not actually fix. You will see it on the lead page under "Site access".
+
 ## Step 5. Look at what it found
 
 ```bash
@@ -119,6 +125,7 @@ visibility layer — spend a few minutes here:**
 |---|---|
 | **Overview** | Funnel counts, gates (what's allowed to happen and why not), the self-test banner, notices, last tick |
 | **Leads → your site** | Both scores, every finding with severity, the exposure estimate, the full email thread, timeline |
+| **Leads → your site → Site access** | How we would apply the fix (`github_pr` here), and once there is a deal, the customer's own setup link |
 | **The report link** on that page | Exactly what a prospect sees: findings, before/after, sourced estimates |
 | **Outbox** | Anything queued or held, with the compliance-lint result |
 | **Notices** | Everything the autopilot handled on its own |
@@ -172,6 +179,35 @@ compliance-engine simulate-reply --lead 1 --text "delete my data"       # erases
 
 ```bash
 compliance-engine simulate-payment --deal 1
+```
+
+Before the fix runs, look at what the customer just received. In **Outbox** there is a new
+"welcome" email telling them how we get in — for a GitHub site whose repository we already
+know, that is "nothing to set up; a pull request will arrive and you press Merge". It also
+restates the monthly promise: when the rules change, their site is measured against the new
+checks at no extra cost.
+
+The link in that email is their setup page. Open it (it needs no login — the token is the
+credential):
+
+```bash
+python - <<'EOF'
+from engine.config import get_settings
+from engine.db import Database
+from engine import onboarding
+s = get_settings(); db = Database(s.database_path)
+print(onboarding.setup_url(s, onboarding.setup_token(db, 1)))
+EOF
+```
+
+That page is what a customer on a custom domain would use to paste their repository
+address, or a WordPress customer to paste an application password. Nothing else is ever
+asked of them. If they ignore it, one reminder goes out after two days and after three days
+the engine stops waiting and delivers the files instead.
+
+Now build the fix:
+
+```bash
 compliance-engine tick
 ```
 

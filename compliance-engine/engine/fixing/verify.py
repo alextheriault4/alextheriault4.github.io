@@ -93,9 +93,13 @@ def queue_delivery_email(db: Database, settings: Settings, deal_id: int, summary
     token = thread[0]["thread_token"]
     last_in = next((m for m in reversed(thread) if m["direction"] == "in"), None)
     n = summary.get("total_changes", 0)
-    if applied.get("applied"):
-        how = ("We've applied the changes directly" + (f"; the pull request is here: {applied['pr_url']}" if applied.get("pr_url") else
-               " through your WordPress site. One small plugin file still needs uploading; instructions are in the bundle."))
+    if applied.get("pr_url"):
+        how = ("The changes are waiting for you as a pull request, with every edit listed and explained: "
+               f"{applied['pr_url']}\n\nRead it, press Merge, and your site rebuilds with the fixes in. "
+               "Nothing on your site has changed until you do.")
+    elif applied.get("applied"):
+        how = ("We've applied the changes directly through your WordPress site. One small plugin file "
+               "still needs uploading; instructions are in the bundle.")
     else:
         how = "The changes are packaged with step-by-step instructions for your platform here: " + bundle_url(settings, token) + \
               ". If you'd rather we apply them, reply with access details and we'll do it."

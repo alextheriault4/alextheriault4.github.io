@@ -32,6 +32,18 @@ from typing import Literal
 Area = Literal["ada", "seo"]
 Detection = Literal["auto", "heuristic", "manual"]
 
+# The checklist is versioned, in YYYY.MM, because clients pay monthly for it to stay
+# current. When WCAG publishes new guidance, or the way assistants read sites changes, a
+# check is added here and the version is bumped; every site on a care plan is then measured
+# against the new list at its next monthly check and told, in the report, what changed and
+# what we did about it. String comparison of these versions is chronological by design.
+CHECKLIST_VERSION = "2026.09"
+
+# What changed in each version, in one line, for the monthly email.
+VERSION_NOTES: dict[str, str] = {
+    "2026.09": "first published checklist: WCAG 2.2 A/AA plus the AI-search and structured-data items",
+}
+
 
 @dataclass(frozen=True)
 class Check:
@@ -47,6 +59,7 @@ class Check:
     auto_fixable: bool = False      # our remediation bundle can do this unattended
     axe_rules: tuple[str, ...] = () # axe-core rule ids that decide this check
     applies: str = "every page"     # when the check is relevant at all
+    since: str = "2026.09"          # checklist version that introduced it
 
     @property
     def level(self) -> str:
@@ -839,6 +852,24 @@ CATEGORY_TITLES = {
     "performance": "Performance - is it fast enough on a phone?",
     "ai_readiness": "AI readiness - can an assistant read, understand and quote it?",
 }
+
+
+def checks_added_since(version: str | None) -> list[Check]:
+    """Checks a site last measured at ``version`` has never been tested against.
+
+    This is what turns "we keep up with the rules" from a sales line into something the
+    monthly report can actually show.
+    """
+    if not version:
+        return []
+    return sorted((c for c in ALL_CHECKS if c.since > version), key=lambda c: (c.since, c.area, c.id))
+
+
+def version_notes_since(version: str | None) -> list[tuple[str, str]]:
+    """(version, what changed) for every checklist release after ``version``."""
+    if not version:
+        return []
+    return [(v, note) for v, note in sorted(VERSION_NOTES.items()) if v > version]
 
 
 def checks_for(area: Area) -> list[Check]:

@@ -12,7 +12,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import autopilot, care
+from . import autopilot, care, onboarding
 from .config import Settings, get_settings
 from .db import Database, utcnow
 from .fixing.verify import start_fix, verify_deal
@@ -178,17 +178,18 @@ class Orchestrator:
     def stage_send(self, now: datetime | None = None) -> dict[str, int]:
         return deliver_queued(self.db, self.settings, self.provider, now)
 
-    def stage_fix(self) -> int:
+    def stage_access(self, now: datetime | None = None) -> int:
+        """Chase the one thing we asked a paying customer for, once."""
+        return onboarding.chase_access(self.db, self.settings, now)
+
+    def stage_fix(self, now: datetime | None = None) -> int:
         n = 0
-        rows = self.db.query(
-            "SELECT d.id FROM deals d WHERE d.status='paid' AND NOT EXISTS (SELECT 1 FROM fixes f WHERE f.deal_id=d.id) ORDER BY d.id"
-        )
-        for r in rows:
+        for deal_id in onboarding.deals_ready_to_fix(self.db, self.settings, now):
             try:
-                start_fix(self.db, self.settings, self.llm, r["id"])
+                start_fix(self.db, self.settings, self.llm, deal_id)
                 n += 1
             except Exception as e:  # noqa: BLE001
-                deal = self.db.one("SELECT lead_id FROM deals WHERE id=?", (r["id"],))
+                deal = self.db.one("SELECT lead_id FROM deals WHERE id=?", (deal_id,))
                 self._fail(deal["lead_id"] if deal else None, "fix", e)
         return n
 
@@ -231,7 +232,8 @@ class Orchestrator:
         if not self.db.is_paused():
             report["followups_queued"] = self.stage_followups(now)
             report["send"] = self.stage_send(now)
-            report["fixes_started"] = self.stage_fix()
+            report["access_chased"] = self.stage_access(now)
+            report["fixes_started"] = self.stage_fix(now)
             report["verified"] = self.stage_verify(now)
             report["care"] = self.stage_care(now)
             report["maintenance"] = self.stage_maintenance()

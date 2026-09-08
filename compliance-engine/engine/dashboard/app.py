@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import care
+from .. import care, onboarding
 from ..autopilot import approve_refund, decline_refund, erase_lead_data, pending_refunds
 from ..config import Settings, get_settings
 from ..db import Database, utcnow
@@ -25,6 +25,7 @@ from ..exposure import money
 from ..finance import ledger
 from ..legal import SecretBox, is_secret
 from ..models import LeadStatus, MessageStatus
+from ..standards import CHECKLIST_VERSION
 
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -39,7 +40,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
 
     def render(request: Request, name: str, **ctx: Any) -> HTMLResponse:
         base = {"request": request, "settings": settings, "mode": settings.mode, "paused": db.is_paused(),
-                "breaker": db.get_kv("breaker"), "last_tick": db.get_kv("last_tick"), "company": settings.company}
+                "breaker": db.get_kv("breaker"), "last_tick": db.get_kv("last_tick"), "company": settings.company,
+                "checklist_version": CHECKLIST_VERSION}
         return templates.TemplateResponse(request, name, {**base, **ctx})
 
     def admin(request: Request) -> None:
@@ -115,9 +117,12 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         for e in events:
             e["detail"] = json.loads(e["detail"]) if e.get("detail") else {}
         creds = {k: db.get_kv(f"lead:{lead_id}:{k}") for k in ("wp_user", "wp_url", "github_repo", "github_subdir")}
+        access = onboarding.access_state(db, settings, lead)
+        setup_link = (onboarding.setup_url(settings, onboarding.setup_token(db, lead_id))
+                      if deals else None)
         return render(request, "lead.html", lead=lead, scan=scan, verification=verification, findings=findings, thread=thread,
-                      deals=deals, fixes=fixes, events=events, creds=creds, statuses=[s.value for s in LeadStatus],
-                      console=settings.email.provider == "console")
+                      deals=deals, fixes=fixes, events=events, creds=creds, access=access, setup_link=setup_link,
+                      statuses=[s.value for s in LeadStatus], console=settings.email.provider == "console")
 
     @app.post("/leads/{lead_id}/status", dependencies=[Depends(admin)])
     def set_status(lead_id: int, status: str = Form(...), reason: str = Form("")):
@@ -309,6 +314,37 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         db.execute("UPDATE messages SET status='suppressed' WHERE lead_id=? AND direction='out' "
                    "AND status IN ('queued','held','draft')", (lead["id"],))
         db.set_lead_status(lead["id"], LeadStatus.UNSUBSCRIBED, "unsubscribe link")
+
+    @app.get("/setup/{token}", response_class=HTMLResponse)
+    def setup_page(request: Request, token: str):
+        """Where a paying customer grants access, in as few steps as their platform allows."""
+        lead = onboarding.lead_for_token(db, token)
+        if not lead:
+            raise HTTPException(404)
+        state = onboarding.access_state(db, settings, lead)
+        return render(request, "setup.html", lead=lead, state=state, token=token,
+                      done=bool(state.granted_at), error=None)
+
+    @app.post("/setup/{token}", response_class=HTMLResponse)
+    def setup_submit(request: Request, token: str, repo: str = Form(""), wp_user: str = Form(""),
+                     wp_app_password: str = Form("")):
+        lead = onboarding.lead_for_token(db, token)
+        if not lead:
+            raise HTTPException(404)
+        state = onboarding.access_state(db, settings, lead)
+        if state.channel == "github_pr":
+            ok, detail = onboarding.grant_github(db, settings, lead["id"], repo)
+        elif state.channel == "wordpress_rest":
+            ok, detail = onboarding.grant_wordpress(db, settings, lead["id"], site_url=lead["url"],
+                                                    username=wp_user, app_password=wp_app_password)
+        else:
+            ok, detail = False, "There is nothing to set up for this site."
+        if not ok:
+            return render(request, "setup.html", lead=lead, state=state, token=token, done=False,
+                          error=detail)
+        lead = db.get_lead(lead["id"])
+        return render(request, "setup.html", lead=lead, token=token, done=True, error=None,
+                      state=onboarding.access_state(db, settings, lead))
 
     @app.get("/bot", response_class=HTMLResponse)
     def bot_info(request: Request):

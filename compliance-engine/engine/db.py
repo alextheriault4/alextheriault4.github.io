@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS leads (
   followups_sent INTEGER NOT NULL DEFAULT 0,
   clarify_count INTEGER NOT NULL DEFAULT 0,
   retry_count INTEGER NOT NULL DEFAULT 0,
+  fixability TEXT,                      -- direct | assisted | unknown
+  fix_channel TEXT,                     -- github_pr | wordpress_rest | header_snippet | none
+  fix_detail TEXT,
+  repo TEXT,                            -- owner/name when we could work it out
+  access_granted_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -44,6 +49,7 @@ CREATE TABLE IF NOT EXISTS scans (
   ada_summary TEXT, aiseo_summary TEXT,          -- JSON
   pages TEXT,                                    -- JSON list of urls scanned
   exposure TEXT,                                 -- JSON
+  checklist_version TEXT,                        -- which edition of the checklist was applied
   error TEXT,
   created_at TEXT NOT NULL
 );
@@ -184,8 +190,11 @@ class Database:
         an earlier version would silently lack the newer columns.
         """
         wanted = {
-            "leads": {"clarify_count": "INTEGER NOT NULL DEFAULT 0", "retry_count": "INTEGER NOT NULL DEFAULT 0"},
+            "leads": {"clarify_count": "INTEGER NOT NULL DEFAULT 0", "retry_count": "INTEGER NOT NULL DEFAULT 0",
+                      "fixability": "TEXT", "fix_channel": "TEXT", "fix_detail": "TEXT", "repo": "TEXT",
+                      "access_granted_at": "TEXT"},
             "messages": {"approved": "INTEGER NOT NULL DEFAULT 0", "hold_reason": "TEXT"},
+            "scans": {"checklist_version": "TEXT"},
             "deals": {
                 "plan": "TEXT", "monthly_cents": "INTEGER NOT NULL DEFAULT 0",
                 "stripe_subscription_id": "TEXT", "care_started_at": "TEXT",

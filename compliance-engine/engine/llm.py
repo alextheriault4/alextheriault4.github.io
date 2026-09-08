@@ -349,13 +349,14 @@ class FakeLLM:
         exp = ctx.get("exposure", {})
         low, high = exp.get("ada_low_cents"), exp.get("ada_typical_cents")
         plan = ctx.get("plan", {})
+        value = ctx.get("value", {})
         setup, monthly = plan.get("setup_cents", 0), plan.get("monthly_cents", 0)
         offer = (f"We fix exactly what the report lists for {_money(setup)}, then {_money(monthly)} a month to keep "
-                 f"it that way: we recheck the site every month, correct anything that slips, and cover new pages "
-                 f"as you publish them."
+                 f"it that way: we recheck the site every month, correct anything that slips, cover new pages as "
+                 f"you publish them, and add new checks as the rules change."
                  if monthly else
                  f"We fix exactly what the report lists for a flat {_money(setup)}, delivered within 10 business "
-                 f"days, with a before-and-after rescan so you can see the difference.")
+                 f"days, with a before-and-after recheck so you can see the difference.")
         return schemas.OutreachDraft(
             subject=f"A few fixable issues on {ctx.get('domain', 'your website')}",
             opening=f"I ran an automated check on {ctx.get('domain')} this week while looking at "
@@ -365,8 +366,11 @@ class FakeLLM:
             findings_paragraph=f"The scan flagged {issue_text}. These are the kinds of gaps that keep screen-reader "
                                f"users from using the site and keep AI assistants from recommending {biz}.",
             exposure_paragraph=(
-                f"For context: web-accessibility demand letters and suits against small businesses commonly settle in the "
-                f"{_money(low)} to {_money(high)} range once legal fees are included (estimate, sources linked below)."
+                f"For context: web-accessibility demand letters and suits against small businesses commonly settle "
+                f"in the {_money(low)} to {_money(high)} range once legal fees are included, and the search gaps "
+                f"here look like roughly {value.get('recoverable_annual', '')} of business a year going elsewhere. "
+                f"Both are estimates from the published figures and assumptions linked below. The work costs "
+                f"{value.get('first_year', _money(setup))} in the first year."
                 if low and high else "These gaps have real costs, detailed below."
             ),
             offer_paragraph=offer,

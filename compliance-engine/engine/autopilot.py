@@ -86,25 +86,40 @@ def safe_outreach_paragraphs(ctx: dict[str, Any]) -> list[str]:
     domain = ctx.get("domain", "your website")
     exposure = ctx.get("exposure", {})
     plan = ctx.get("plan", {})
+    value = ctx.get("value", {})
     scores = ""
     if ctx.get("ada_score") is not None:
         scores = (f" It scored {ctx['ada_score']}% on the accessibility checks and "
                   f"{ctx['aiseo_score']}% on the search and AI ones.")
     price = (f"{plan.get('setup')} to fix everything the report lists, then {plan.get('monthly')} a month"
              if plan.get("monthly_cents") else f"a flat {plan.get('setup')}")
+
+    # The comparison, stated plainly. Both halves are estimates and both are labelled.
+    comparison = (
+        f"For context, settlements in web accessibility claims against small businesses have been reported "
+        f"in the {exposure.get('ada_low', '')} to {exposure.get('ada_typical', '')} range once legal fees are "
+        f"counted, and the search gaps on this site look like roughly {value.get('recoverable_annual', '')} of "
+        f"business a year going elsewhere. Both are estimates from published figures and the stated "
+        f"assumptions below, not predictions about you. The work costs {value.get('first_year', '')} in the "
+        f"first year."
+    ) if value.get("recoverable_annual") else (
+        f"For context, settlements in web accessibility claims against small businesses have been reported "
+        f"in the {exposure.get('ada_low', '')} to {exposure.get('ada_typical', '')} range once legal fees are "
+        f"counted. That is an estimate from published figures, not a prediction about you."
+    )
+
     return [
         f"I ran an automated accessibility and search check on {domain} this week and thought the "
         f"results were worth passing along.{scores}",
         (f"The scan flagged a few things: {listed}." if listed
          else "The scan flagged a handful of accessibility and search issues."),
-        (f"For context, settlements in web accessibility claims against small businesses have been "
-         f"reported in the {exposure.get('ada_low', '')} to {exposure.get('ada_typical', '')} range once legal "
-         f"fees are counted. That is an estimate from published figures, not a prediction about you."),
+        comparison,
         f"We fix the items the report lists for {price}. The monthly part is what keeps it fixed: we "
-        f"recheck the site every month and correct anything that slips, including on new pages."
+        f"recheck the site every month, correct anything that slips including on new pages, and add new "
+        f"checks as the accessibility and search rules change."
         if plan.get("monthly_cents") else
         f"We fix the items the report lists for {price}, normally within "
-        f"{ctx.get('turnaround', '10 business days')}, and rescan afterwards so you can see the change.",
+        f"{ctx.get('turnaround', '10 business days')}, and recheck afterwards so you can see the change.",
         "If you would like the full report, or would like us to go ahead, just reply to this email.",
     ]
 

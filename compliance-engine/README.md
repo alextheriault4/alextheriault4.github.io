@@ -29,10 +29,12 @@ prospect ──► scan ──► draft ──► send ──► replies ──�
 | Send | `engine/outreach/sequence.py` | Weekday business-hours window in your timezone, daily cap, suppression list, two follow-ups (day 3, day 7), bounce/complaint circuit breaker, pause switch. |
 | Inbox | `engine/inbox` | Threads matched by `reply+<token>@` address or Message-ID. Claude classifies intent; code acts: unsubscribe and bounces suppress instantly, "not interested" is honoured permanently, redirects re-target the new person, questions/objections go to the negotiation agent, anything hostile or unclear escalates to you. |
 | Negotiate | `engine/inbox/negotiate.py` | Claude writes the reply inside a fixed policy: list prices, max discount, hard floor; the code clamps the price and never closes a deal without an explicit "yes". |
-| Plans | `engine/plans.py` | **Retainer first**: a setup fee to fix it, then a monthly fee to keep it fixed. A one-off is also offered, priced higher. See "Why a retainer" below. |
+| Fixability | `engine/fixability.py` | Decides during the scan whether we could actually change this site (GitHub Pages, Netlify/Vercel/Cloudflare Pages, WordPress REST). Anything we could not change is marked `not_fixable` and never enters outreach. |
+| Plans | `engine/plans.py` | **Retainer first**: a setup fee to fix it, then a small monthly fee to keep it fixed and keep the checklist current. The one-off is the same fix at the same price, without the monitoring. See "Why a retainer" below. |
 | Checkout | `engine/deals/checkout.py` | Stripe Checkout with Stripe Tax, in subscription mode for care plans (setup line + recurring line on one page) or payment mode for the one-off. Webhooks handle the first payment, each monthly invoice, cancellation and refunds. Placeholder link + "simulate payment" until Stripe is live. |
-| Care | `engine/care.py` | The monthly retainer, delivered automatically: rescan, diff against last month to find regressions and new pages, fix what's auto-fixable, email a short report. A quiet month still gets a report, because "nothing regressed" is what they're paying to hear. |
-| Fix | `engine/fixing` | Deterministic HTML patches keyed to findings (alt text, labels, names, lang, title, meta, OG, canonical, JSON-LD, FAQ schema, landmarks, skip link, heading levels, frame titles, focus styles, contrast overrides, tap targets), plus robots.txt (AI crawlers unblocked), sitemap.xml, llms.txt. Applied via WordPress REST + generated mu-plugin, a GitHub pull request, or delivered as a bundle with per-platform instructions and a "needs your input" list. |
+| Onboarding | `engine/onboarding.py` | The moment they pay, emails the shortest access path their platform allows and a private `/setup/<token>` page: nothing at all for a known GitHub repo, one pasted repository address otherwise, or a four-click WordPress application password. One reminder after two days; after three we deliver the files rather than keep waiting. |
+| Care | `engine/care.py` | The monthly retainer, delivered automatically: rescan against the current checklist edition, diff against last month to find regressions, new pages and newly-added checks, fix what's auto-fixable, email a short report. A quiet month still gets a report, because "nothing regressed" is what they're paying to hear. |
+| Fix | `engine/fixing` | Deterministic HTML patches keyed to findings (alt text, labels, names, lang, title, meta, OG, canonical, JSON-LD, FAQ schema, landmarks, skip link, heading levels, frame titles, focus styles, contrast overrides, tap targets), plus robots.txt (AI crawlers unblocked), sitemap.xml, llms.txt. Applied via WordPress REST + generated mu-plugin, or a GitHub pull request opened **from our fork** so the client needs to grant us nothing and nothing changes until they press Merge. Otherwise delivered as a bundle with per-platform instructions and a "needs your input" list. |
 | Verify | `engine/fixing/verify.py` | Rescans every 3 days for 45 days; "resolved" means a +15 jump, at least 70, and nothing critical left in the paid area. Sends the before/after report; otherwise escalates. |
 | Finance | `engine/finance/ledger.py` | Charges, refunds, estimated fees, tax collected, monthly P&L, taxable sales by client state (nexus watch), CSV export for your accountant. |
 | Autopilot | `engine/autopilot.py` | Gives every dead end a pre-decided answer so nothing waits on you: lint repair, safe fallback template, stand-downs, clarify-then-close, automatic refunds, data erasure. |
@@ -70,9 +72,12 @@ It is not a statement of legal compliance, and the report says so in as many wor
 
 ## Why a retainer is the main offer
 
-The default plan is **$990 to fix it, then $249/month to keep it fixed** (all configurable).
-A one-off remediation is still available at $1,790 — priced higher, because without the
-recurring relationship it has to carry its own acquisition cost.
+The default plan is **$499 to fix it, then $9.99/month to keep it fixed** (all configurable).
+The one-off is the same $499 — the fix is the same work either way, so charging more for it
+would only be a penalty for not subscribing. What the $9.99 buys is everything that happens
+after: the monthly recheck, regressions fixed, new pages covered, and the checklist itself
+kept current. These are small businesses; the monthly number is deliberately small enough
+that cancelling is never the obvious move.
 
 Three reasons the retainer leads, in `engine/plans.py`:
 
@@ -86,6 +91,43 @@ Three reasons the retainer leads, in `engine/plans.py`:
 The monthly fee is genuinely serviced, automatically: each month the engine rescans, diffs
 against the previous cycle, fixes what regressed, and sends a short report. Cancellation is
 one click from any receipt, and the agreement says so.
+
+**The checklist is versioned, and keeping it current is part of what they bought.**
+`CHECKLIST_VERSION` in `engine/standards/checks.py` is a `YYYY.MM` edition, and every check
+records the edition that introduced it. Each scan is stamped with the edition it used, so
+when a check is added the care cycle can see that a client was last measured against an older
+list: their next monthly report names the new checks, says whether their site already met
+them, and fixes what is auto-fixable — at no extra charge. Bump the version, add checks with
+`since=` set to it, add a line to `VERSION_NOTES`, and rerun
+`python tools/generate_standards.py`; nothing else needs touching.
+
+## We only email people whose sites we can actually change
+
+Selling a remediation and then mailing a zip file is how you earn refund requests. So
+fixability is decided during the scan, from evidence (`engine/fixability.py`): response
+headers identify GitHub Pages, Netlify, Vercel and Cloudflare Pages; the WordPress REST API
+is probed directly; site builders are recognised by platform. A site we could not change is
+marked `not_fixable` and never enters outreach. Turn the gate off with
+`CE_PROSPECTING__REQUIRE_FIXABLE=false` if you also want to sell paste-it-in work.
+
+GitHub-hosted sites are the best first market because the customer grants us **nothing**: we
+fork the public repository, open a pull request with every change explained, and they press
+Merge. Nothing on their site moves until they do.
+
+## Getting access, without making the customer work for it
+
+The moment payment lands, `engine/onboarding.py` emails the customer the shortest path their
+platform allows, with a private setup page (`/setup/<token>`):
+
+| Their site | What we ask for |
+|---|---|
+| GitHub (repo known from the scan) | Nothing at all. A pull request arrives; they press Merge. |
+| GitHub (custom domain) | One thing: paste the repository address. No password, no token. |
+| WordPress with the REST API | An application password — four clicks, revocable, never their real password, stored encrypted and deleted on delivery. |
+
+If we are still waiting after two days, one reminder goes out. After three days we stop
+waiting and deliver the finished files with instructions instead — nobody's paid work sits
+idle behind a form.
 
 ## Which model account it spends
 
@@ -206,7 +248,7 @@ That is the number that gets a sending domain blacklisted, so it is worth your a
 ## What is and isn't automated (read this part)
 
 - **Taxes.** Stripe Tax calculates and collects sales tax on each checkout. It does not register you in a state or file returns. The finance page shows taxable sales by client state so you can see where you're approaching economic-nexus thresholds; the CSV export is what your accountant (or Stripe's filing partners) needs. Income tax is yours.
-- **Fixing arbitrary websites.** Fully hands-off application only exists where there is an API: WordPress (REST + application password, plus one small must-use plugin file for the site-level pieces) and Git-hosted sites (pull request). Wix, Squarespace, GoDaddy and similar builders don't expose their editors to third parties, so those clients get a bundle with exact per-platform steps and a header snippet. The delivery email offers to apply the changes if they hand over a collaborator invite; that request lands in "needs a human".
+- **Fixing arbitrary websites.** Fully hands-off application only exists where there is an API: WordPress (REST + application password, plus one small must-use plugin file for the site-level pieces) and Git-hosted sites (a pull request from our fork). Wix, Squarespace, GoDaddy and similar builders don't expose their editors to third parties — which is exactly why the fixability gate keeps them out of outreach by default. Turn `CE_PROSPECTING__REQUIRE_FIXABLE` off and those clients get a bundle with exact per-platform steps and a header snippet instead.
 - **Content and design.** Some findings need a human decision (thin content, no phone/address on the page, HTTPS, captions, JS-only rendering). They are listed as "needs your input" in the change log, not silently ignored, and they don't count against verification.
 - **Escalations.** With the autopilot on, the cases above resolve themselves and you get notices instead. Turn it off and they queue up for you.
 - **Deliverability.** The circuit breaker pauses cold sends when bounces exceed 5% or complaints 0.2% (tunable). A tripped breaker stays tripped until you reset it on the dashboard.
@@ -284,10 +326,11 @@ See `.env.example` for the full list. Notable ones:
 |---|---|---|
 | `CE_MODE` | `dry_run` | `live` is required for any external side effect |
 | `CE_AUTONOMY__AUTO_SEND_OUTREACH` / `AUTO_REPLY` / `AUTO_SEND_CHECKOUT` / `AUTO_APPLY_FIXES` | `false` | per-stage autonomy; off = held for approval |
-| `CE_PRICING__CARE_SETUP_CENTS` / `CARE_MONTHLY_CENTS` | $990 / $249 | the recommended plan |
-| `CE_PRICING__FIX_ONLY_CENTS` | $1,790 | one-off, no ongoing cover |
-| `CE_PRICING__FLOOR_SETUP_CENTS` / `FLOOR_MONTHLY_CENTS`, `MAX_DISCOUNT_PCT` | $590 / $149, 20 | the negotiation agent can never go below these |
+| `CE_PRICING__CARE_SETUP_CENTS` / `CARE_MONTHLY_CENTS` | $499 / $9.99 | the recommended plan |
+| `CE_PRICING__FIX_ONLY_CENTS` | $499 | the same fix, no ongoing cover |
+| `CE_PRICING__FLOOR_SETUP_CENTS` / `FLOOR_MONTHLY_CENTS`, `MAX_DISCOUNT_PCT` | $399 / $9.99, 20 | the negotiation agent can never go below these |
 | `CE_PRICING__CLEAN_ADA_PERCENT` / `CLEAN_SEO_PERCENT` | 92 / 88 | a site scoring above both is left alone, not pitched |
+| `CE_PROSPECTING__REQUIRE_FIXABLE` | true | only pitch sites we could actually change (GitHub, Git-backed hosts, WordPress REST) |
 | `CE_OUTREACH__DAILY_SEND_CAP`, `FOLLOWUP_DAYS`, send window, timezone | 40, [3,7], 9-17, America/New_York | cadence |
 | `CE_LLM__MODEL`, `EFFORT` | `claude-opus-5`, `medium` | model and effort for drafting/negotiation (classification runs at `low`) |
 | `CE_SCANNING__MAX_PAGES_PER_SITE` | 4 | home + 3 priority pages (contact/about/services...) |

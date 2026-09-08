@@ -26,7 +26,7 @@ from .llm import LLM, LLMCapacityError
 from .models import MessageStatus
 from .outreach.compose import to_html
 from .scanning.runner import persist_scan, scan_site
-from .standards import BY_ID
+from .standards import BY_ID, CHECKLIST_VERSION, checks_added_since, version_notes_since
 
 CARE_CYCLE_DAYS = 30
 
@@ -55,7 +55,14 @@ def compare(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[st
         return out
 
     before, after = statuses(previous), statuses(current)
-    regressions = sorted(k for k in after if k not in before)
+    # Rules move. If the checklist has grown since this client was last measured, the new
+    # items are part of what they paid for, so they are named rather than quietly applied -
+    # and kept out of "regressions", because failing a rule that did not exist last month is
+    # not something that slipped.
+    was_version = (previous or {}).get("checklist_version")
+    new_checks = checks_added_since(was_version)
+    new_ids = {c.id for c in new_checks}
+    regressions = sorted(k for k in after if k not in before and k not in new_ids)
     resolved = sorted(k for k in before if k not in after)
     return {
         "regressions": regressions,
@@ -64,6 +71,14 @@ def compare(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[st
         "after": {"ada": current.get("ada_score"), "seo": current.get("aiseo_score")},
         "regression_titles": [BY_ID[k].title for k in regressions if k in BY_ID],
         "fixable_regressions": [k for k in regressions if k in BY_ID and BY_ID[k].auto_fixable],
+        "checklist_before": was_version,
+        "checklist_now": current.get("checklist_version") or CHECKLIST_VERSION,
+        "new_checks": [c.id for c in new_checks],
+        "new_check_titles": [c.title for c in new_checks],
+        "checklist_notes": version_notes_since(was_version),
+        # A new rule this site already fails is work owed this month, not next.
+        "new_check_failures": [c.id for c in new_checks if c.id in after],
+        "fixable_new_checks": [c.id for c in new_checks if c.id in after and c.auto_fixable],
     }
 
 
@@ -87,7 +102,7 @@ def run_cycle(db: Database, settings: Settings, llm: LLM, browser: Browser, deal
     delta = compare(previous, current)
 
     fixed: list[str] = []
-    if delta["fixable_regressions"]:
+    if delta["fixable_regressions"] or delta["fixable_new_checks"]:
         try:
             fixed = apply_regression_fix(db, settings, llm, deal, delta)
         except LLMCapacityError:
@@ -102,6 +117,7 @@ def run_cycle(db: Database, settings: Settings, llm: LLM, browser: Browser, deal
     queue_care_report(db, settings, deal["id"], delta, fixed, cycles)
     db.log_event("care_cycle", lead["id"], deal_id=deal["id"], cycle=cycles, scan_id=scan_id,
                  regressions=len(delta["regressions"]), fixed=len(fixed),
+                 new_checks=len(delta["new_checks"]), checklist=delta["checklist_now"],
                  ada=delta["after"]["ada"], seo=delta["after"]["seo"])
     return {"ok": True, "cycle": cycles, **delta, "fixed": fixed}
 
@@ -127,7 +143,7 @@ def apply_regression_fix(db: Database, settings: Settings, llm: LLM, deal: dict[
                     "apply": applied},
         "created_at": utcnow(), "applied_at": utcnow() if applied.get("applied") else None,
     })
-    return delta["fixable_regressions"]
+    return sorted(set(delta["fixable_regressions"]) | set(delta.get("fixable_new_checks", [])))
 
 
 def queue_care_report(db: Database, settings: Settings, deal_id: int, delta: dict[str, Any],
@@ -156,11 +172,25 @@ def queue_care_report(db: Database, settings: Settings, deal_id: int, delta: dic
         else:
             lines.append(f"{len(delta['regressions'])} thing(s) had slipped since last month ({titles}). "
                          f"They're in the report with what each one needs.")
+    elif delta.get("new_check_failures"):
+        lines.append("Nothing you had already been measured on slipped this month; the work below is "
+                     "against checks that are new since your last one.")
     else:
         lines.append("Nothing regressed this month and no new problems appeared, so there was nothing to fix. "
                      "That is what the monthly check is for.")
     if delta["resolved"]:
         lines.append(f"{len(delta['resolved'])} previously reported item(s) are now passing.")
+
+    if delta.get("new_checks"):
+        what = "; ".join(note for _, note in delta.get("checklist_notes", [])) or "the checklist was updated"
+        titles = ", ".join(delta["new_check_titles"][:4])
+        failing = len(delta.get("new_check_failures", []))
+        lines.append(
+            f"The standards moved since your last check ({what}). Your site was measured against "
+            f"{len(delta['new_checks'])} new item(s) this month - {titles}"
+            + (f" - and {failing} of them needed work, which is included."
+               if failing else " - and it already met all of them.")
+            + " Keeping up with changes like this is what your monthly plan is for; there is no extra charge.")
 
     lines += [
         f"Full report: {settings.stripe.public_base_url.rstrip('/')}/r/{token}",

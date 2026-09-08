@@ -12,6 +12,13 @@ FIXTURES = Path(__file__).parent / "fixtures" / "sites"
 
 
 class _Quiet(http.server.SimpleHTTPRequestHandler):
+    # Fixture servers pretend to be GitHub Pages by default, because that is the market we
+    # actually pitch: the fixability gate refuses to email anyone whose site we cannot change.
+    server_token = "GitHub.com"
+
+    def version_string(self) -> str:
+        return self.server_token
+
     def log_message(self, *a):  # noqa: D401
         pass
 
@@ -25,8 +32,9 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
 
 
 class SiteServer:
-    def __init__(self, root: Path):
-        handler = functools.partial(_Quiet, directory=str(root))
+    def __init__(self, root: Path, server_token: str = "GitHub.com"):
+        handler = functools.partial(type("_H", (_Quiet,), {"server_token": server_token}),
+                                    directory=str(root))
         self.httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -44,6 +52,14 @@ class SiteServer:
 @pytest.fixture(scope="session")
 def bad_site():
     s = SiteServer(FIXTURES / "bad_site")
+    yield s
+    s.stop()
+
+
+@pytest.fixture(scope="session")
+def unhostable_site():
+    """The same broken site on a host we have no way into - nothing to pitch."""
+    s = SiteServer(FIXTURES / "bad_site", server_token="SomeProprietaryHost/1.0")
     yield s
     s.stop()
 

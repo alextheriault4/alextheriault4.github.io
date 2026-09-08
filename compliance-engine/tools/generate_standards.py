@@ -14,7 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engine.standards import ALL_CHECKS, CATEGORY_TITLES, Check  # noqa: E402
+from engine.standards import (ALL_CHECKS, CATEGORY_TITLES, CHECKLIST_VERSION,  # noqa: E402
+                              VERSION_NOTES, Check)
 
 OUT = Path(__file__).resolve().parent.parent / "STANDARDS.md"
 
@@ -76,7 +77,26 @@ not a statement that a site is legally compliant, and the report never claims it
   usually right), `needs a person` (listed, never scored).
 * **We fix it** - yes means the remediation bundle repairs it without the client doing
   anything.
+
+## Editions
+
+The checklist is versioned `YYYY.MM`, because clients on the monthly plan pay for it to stay
+current. When the accessibility guidelines change, or search engines and AI assistants change
+what they read, a check is added here and the version is bumped; every site on a care plan is
+measured against the new list at its next monthly check and told in its report what changed.
+Each check records the edition that introduced it.
+
+{editions}
 """
+
+
+def editions() -> str:
+    rows = ["| Edition | What changed |", "|---|---|"]
+    for version, note in sorted(VERSION_NOTES.items(), reverse=True):
+        n = sum(1 for c in ALL_CHECKS if c.since == version)
+        current = " *(current)*" if version == CHECKLIST_VERSION else ""
+        rows.append(f"| **{version}**{current} | {note} ({n} check{'s' if n != 1 else ''}) |")
+    return "\n".join(rows)
 
 
 def table(checks: list[Check]) -> str:
@@ -126,7 +146,7 @@ def render() -> str:
         "have converged: both now depend on machine-readable facts rather than keywords."
     )
     body = [
-        HEADER,
+        HEADER.format(editions=editions()),
         section("ada", "Part 1 - Accessibility", ada_intro),
         section("seo", "Part 2 - Search and AI discoverability", seo_intro),
         "## Building to this standard\n",
@@ -143,7 +163,8 @@ def render() -> str:
         "10. Server-rendered text, the trade and the town in plain words, and an accessibility statement.\n",
         "`tests/fixtures/sites/good_site/` is a complete worked example that scores 100/100.\n",
         "---\n",
-        f"*Generated from `engine/standards/checks.py` - {len(ALL_CHECKS)} checks. "
+        f"*Generated from `engine/standards/checks.py` - {len(ALL_CHECKS)} checks, "
+        f"edition {CHECKLIST_VERSION}. "
         "Run `python tools/generate_standards.py` after changing the registry.*",
     ]
     return "\n".join(body) + "\n"

@@ -39,20 +39,16 @@ class PricingSettings(BaseModel):
 
     currency: str = "usd"
 
-    # Recommended: fix it now, then keep it fixed.
-    care_setup_cents: int = 99_000          # $990 remediation
-    care_monthly_cents: int = 24_900        # $249/month care
-    care_ada_setup_cents: int = 74_900
-    care_ada_monthly_cents: int = 17_900
-    care_seo_setup_cents: int = 59_900
-    care_seo_monthly_cents: int = 14_900
-    # No ongoing cover, so it carries its own acquisition cost.
-    fix_only_cents: int = 179_000
-    minimum_months: int = 3
+    # Two plans, one price for the work. Small businesses do not want a pricing grid.
+    care_setup_cents: int = 49_900          # $499 to fix everything in the report
+    care_monthly_cents: int = 999           # $9.99/month to keep it fixed
+    fix_only_cents: int = 49_900            # the same fix, without the monitoring
+    minimum_months: int = 0                 # no commitment; cancel any time
 
-    # Negotiation limits.
-    floor_setup_cents: int = 59_000
-    floor_monthly_cents: int = 14_900
+    # Negotiation limits. There is no room to discount ten dollars, so the monthly is fixed
+    # and only the up-front fee can move.
+    floor_setup_cents: int = 39_900
+    floor_monthly_cents: int = 999
     max_discount_pct: int = 20
 
     # A site scoring at or above both of these is left alone rather than pitched.
@@ -207,6 +203,9 @@ class StripeSettings(BaseModel):
 
 
 class ProspectingSettings(BaseModel):
+    # Only contact businesses whose site we could actually change once they say yes.
+    # Selling a fix you can only deliver as a zip file is how you earn refunds.
+    require_fixable: bool = True
     google_places_key: str = ""
     overpass_url: str = "https://overpass-api.de/api/interpreter"
     request_timeout: float = 30.0

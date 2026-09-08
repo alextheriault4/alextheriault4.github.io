@@ -14,9 +14,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .. import onboarding
 from .. import plans as plan_lib
 from ..config import Settings
 from ..db import Database, utcnow
+from ..exposure import money
 from ..models import DealStatus, LeadStatus, MessageStatus
 from ..outreach.compliance import lint_email
 from ..outreach.compose import to_html
@@ -98,13 +100,13 @@ def queue_checkout_email(db: Database, settings: Settings, deal_id: int, thread_
     plan = plan_lib.get(settings, deal.get("plan") or deal["package"])
     setup, monthly = int(deal["price_cents"]), int(deal.get("monthly_cents") or 0)
     if monthly and setup:
-        price_line = (f"${setup / 100:,.0f} to fix everything in the report, then ${monthly / 100:,.0f} a month "
-                      f"to keep it that way. Both are on the one checkout page; the monthly part starts today "
-                      f"and you can cancel it any time from the receipt.")
+        price_line = (f"{money(setup)} to fix everything in the report, then {money(monthly)} a month to keep it "
+                      f"that way. Both are on the one checkout page; the monthly part starts today and you can "
+                      f"cancel it any time in one click from the receipt.")
     elif monthly:
-        price_line = f"${monthly / 100:,.0f} a month, cancellable any time from the receipt."
+        price_line = f"{money(monthly)} a month, cancellable any time in one click from the receipt."
     else:
-        price_line = f"${setup / 100:,.0f}, one payment, nothing recurring."
+        price_line = f"{money(setup)}, one payment, nothing recurring."
     body = "\n\n".join([
         f"Hi {lead.get('business_name') or 'there'},",
         f"Here is the secure payment link for {lead['domain']} ({plan.name}): {deal['checkout_url']}",
@@ -171,6 +173,8 @@ def mark_paid(db: Database, settings: Settings, deal_id: int, *, stripe_session_
     db.set_lead_status(deal["lead_id"], LeadStatus.PAID)
     db.log_event("paid", deal["lead_id"], deal_id=deal_id, amount_cents=amount, tax_cents=tax_cents,
                  recurring=bool(monthly))
+    # Tell them straight away how we get in - the easiest way their platform allows.
+    onboarding.queue_welcome(db, settings, deal_id)
 
 
 def record_recurring_payment(db: Database, settings: Settings, subscription_id: str, *,

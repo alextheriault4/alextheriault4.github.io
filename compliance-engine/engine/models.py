@@ -20,6 +20,7 @@ class LeadStatus(StrEnum):
     UNSUBSCRIBED = "unsubscribed"
     BOUNCED = "bounced"
     EXCLUDED = "excluded"          # outside the contact policy (non-US, excluded trade)
+    NOT_FIXABLE = "not_fixable"    # we could not actually change this site for them
     REFUNDED = "refunded"          # money returned, file closed
     NEEDS_HUMAN = "needs_human"    # agent hit a policy edge; shown on dashboard
     ARCHIVED = "archived"
@@ -104,6 +105,8 @@ class EventKind(StrEnum):
     NOTICE = "notice"                 # for your information; no action needed
     DEFERRED = "deferred"             # no model capacity right now; will retry
     EXCLUDED = "excluded"             # refused by the contact policy
+    NOT_FIXABLE = "not_fixable"
+    ACCESS_GRANTED = "access_granted"
     REFUND_REQUESTED = "refund_requested"   # queued for your approval
     REFUND_DECLINED = "refund_declined"
     REFUNDED = "refunded"

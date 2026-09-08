@@ -49,102 +49,90 @@ class Plan:
     def first_payment_cents(self) -> int:
         return self.setup_cents + (self.monthly_cents if self.billing == "subscription" and not self.setup_cents else 0)
 
+    @staticmethod
+    def _money(cents: int) -> str:
+        """Whole dollars where it is whole dollars; cents where the cents matter."""
+        return f"${cents / 100:,.0f}" if cents % 100 == 0 else f"${cents / 100:,.2f}"
+
     def price_summary(self) -> str:
         if not self.is_recurring:
-            return f"${self.setup_cents / 100:,.0f} one-off"
+            return f"{self._money(self.setup_cents)} once"
         if self.setup_cents:
-            return f"${self.setup_cents / 100:,.0f} to fix it, then ${self.monthly_cents / 100:,.0f}/month"
-        return f"${self.monthly_cents / 100:,.0f}/month"
+            return f"{self._money(self.setup_cents)} to fix it, then {self._money(self.monthly_cents)}/month"
+        return f"{self._money(self.monthly_cents)}/month"
 
     def annual_value_cents(self) -> int:
         return self.setup_cents + self.monthly_cents * 12
 
+    def first_year_cents(self) -> int:
+        """What it costs them in the first twelve months - the number to compare against."""
+        return self.setup_cents + self.monthly_cents * 12
+
+
+MAINTENANCE_LINE = (
+    "the checklist itself kept current - when WCAG guidance changes, or the search engines "
+    "and AI assistants change what they read, the new checks are added and your site is "
+    "measured against them at no extra cost"
+)
+
 
 def catalogue(settings: Settings | PricingSettings) -> dict[str, Plan]:
-    """The plans on offer, built from your configured prices."""
+    """The plans on offer, built from your configured prices.
+
+    Two, deliberately. The work is identical either way; the only question is whether they
+    want it watched afterwards. A pricing grid would cost more in confusion than it could
+    ever earn from a business this size.
+    """
     p = settings.pricing if isinstance(settings, Settings) else settings
     return {
         "care": Plan(
-            id="care", name="Accessibility & AI-search care",
+            id="care", name="Fix and keep it fixed",
             billing="subscription", setup_cents=p.care_setup_cents, monthly_cents=p.care_monthly_cents,
             covers=("ada", "seo"), recommended=True, minimum_months=p.minimum_months,
-            blurb="we fix everything in the report now, then keep it fixed with a monthly rescan",
+            blurb="we fix everything in the report now, then check it every month and fix whatever slips",
             includes=(
                 "every issue in the report fixed, usually within 10 business days",
-                "an automatic rescan every month against the full checklist",
+                "an automatic recheck every month against the whole checklist",
                 "anything that regresses fixed the same week, at no extra cost",
                 "new pages you publish checked and corrected as they appear",
-                "a short monthly report showing both scores and what changed",
-                "an accessibility statement page kept current on your site",
-            ),
-        ),
-        "care_ada": Plan(
-            id="care_ada", name="Accessibility care",
-            billing="subscription", setup_cents=p.care_ada_setup_cents, monthly_cents=p.care_ada_monthly_cents,
-            covers=("ada",), minimum_months=p.minimum_months,
-            blurb="the accessibility half only, fixed now and monitored monthly",
-            includes=(
-                "every accessibility issue in the report fixed",
-                "monthly rescan against WCAG 2.2 AA automated checks",
-                "regressions fixed the same week",
-                "a short monthly report",
-            ),
-        ),
-        "care_seo": Plan(
-            id="care_seo", name="AI-search care",
-            billing="subscription", setup_cents=p.care_seo_setup_cents, monthly_cents=p.care_seo_monthly_cents,
-            covers=("seo",), minimum_months=p.minimum_months,
-            blurb="the AI and search half only, fixed now and monitored monthly",
-            includes=(
-                "structured data, llms.txt, sitemap, metadata and crawler access fixed",
-                "monthly rescan for regressions and new pages",
-                "a short monthly report",
+                MAINTENANCE_LINE,
+                "a short monthly email showing both scores and what changed",
+                "cancel any time, in one click, with no notice period",
             ),
         ),
         "fix_only": Plan(
-            id="fix_only", name="One-off remediation",
+            id="fix_only", name="One-off fix",
             billing="one_time", setup_cents=p.fix_only_cents, monthly_cents=0,
             covers=("ada", "seo"),
-            blurb="a single fix of everything in the report, with no ongoing cover",
+            blurb="the same fix, once, with no monthly checking afterwards",
             includes=(
                 "every issue in the report fixed",
-                "a verification rescan and a before/after report",
+                "a verification recheck and a before/after report",
                 "30 days of follow-up corrections",
-                "no monitoring afterwards - new content is not covered",
+                "no monitoring afterwards - new pages and new rules are not covered",
             ),
         ),
     }
 
 
 def recommend(settings: Settings, ada_percent: int, seo_percent: int) -> Plan:
-    """Which plan to lead with, given what the scan found.
-
-    Always a care plan: the narrow ones only when a site is already strong in the other
-    half, so the pitch stays honest about what the business actually needs.
-    """
-    plans = catalogue(settings)
-    ada_ok = ada_percent >= settings.pricing.strong_percent
-    seo_ok = seo_percent >= settings.pricing.strong_percent
-    if ada_ok and not seo_ok:
-        return plans["care_seo"]
-    if seo_ok and not ada_ok:
-        return plans["care_ada"]
-    return plans["care"]
+    """Which plan to lead with. Always the monitored one: the fix is the same price, so
+    the only real question is whether it stays fixed."""
+    return catalogue(settings)["care"]
 
 
 def alternatives(settings: Settings, recommended: Plan) -> list[Plan]:
-    """What else to mention, cheapest commitment last."""
-    plans = catalogue(settings)
-    out = [p for p in plans.values() if p.id != recommended.id and p.id in ("care", "fix_only")]
-    return sorted(out, key=lambda p: (not p.is_recurring, p.annual_value_cents()))
+    """What else to mention."""
+    return [p for p in catalogue(settings).values() if p.id != recommended.id]
 
 
 def get(settings: Settings, plan_id: str) -> Plan:
     plans = catalogue(settings)
     if plan_id in plans:
         return plans[plan_id]
-    # Deals written before the plan catalogue existed used bare package names.
-    legacy = {"bundle": "fix_only", "ada": "care_ada", "aiseo": "care_seo"}
+    # Deals written against older catalogues and package names still resolve.
+    legacy = {"bundle": "fix_only", "ada": "care", "aiseo": "care",
+              "care_ada": "care", "care_seo": "care"}
     return plans[legacy.get(plan_id, "care")]
 
 

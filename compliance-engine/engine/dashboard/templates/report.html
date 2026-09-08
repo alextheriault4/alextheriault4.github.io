@@ -15,7 +15,7 @@
 
 <h1>Website report for {{ lead.business_name or lead.domain }}</h1>
 <p class="muted">Automated scan of {{ scan.pages|length }} page{{ '' if scan.pages|length == 1 else 's' }}
-on {{ scan.created_at[:10] }} by {{ company.name }}, against a {{ total_checks }}-point checklist.</p>
+on {{ scan.created_at[:10] }} by {{ company.name }}, against a {{ total_checks }}-point checklist (edition {{ scan.checklist_version or checklist_version }}).</p>
 
 {% macro band_class(pct) %}{{ 'ok' if pct >= 85 else ('warn' if pct >= 70 else 'bad') }}{% endmacro %}
 

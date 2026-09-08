@@ -1,0 +1,42 @@
+{% extends "base.html" %}{% block header %}{% endblock %}
+{% block title %}Set up {{ lead.domain }} - {{ company.name }}{% endblock %}
+{% block body %}
+<div class="card" style="max-width:620px;margin:3rem auto">
+{% if done %}
+  <h1>That's everything</h1>
+  <p>Thank you - we have what we need for <strong>{{ lead.domain }}</strong>. The changes go in next,
+     and you'll get an email with the before/after report once they're live.</p>
+  <p class="muted">Nothing else is needed from you.</p>
+{% else %}
+  <h1>Setting up {{ lead.domain }}</h1>
+  <p>{{ state.headline }}</p>
+  <ol>{% for step in state.steps %}<li style="margin:.4rem 0">{{ step }}</li>{% endfor %}</ol>
+
+  {% if error %}<p style="color:var(--bad)"><strong>{{ error }}</strong></p>{% endif %}
+
+  {% if state.needs_form and state.channel == 'github_pr' %}
+    <form method="post">
+      <label for="repo">Your repository address</label>
+      <input type="text" id="repo" name="repo" placeholder="https://github.com/yourname/your-site" required>
+      <p class="muted">We only open a pull request. We cannot change anything until you press Merge.</p>
+      <button class="primary" type="submit">Send it</button>
+    </form>
+  {% elif state.needs_form and state.channel == 'wordpress_rest' %}
+    <form method="post">
+      <label for="wp_user">WordPress username</label>
+      <input type="text" id="wp_user" name="wp_user" required>
+      <label for="wp_app_password" style="display:block;margin-top:.6rem">Application password</label>
+      <input type="password" id="wp_app_password" name="wp_app_password"
+             placeholder="xxxx xxxx xxxx xxxx xxxx xxxx" required>
+      <p class="muted">This is not your WordPress password. It only works for this, we store it
+         encrypted, we delete it once the work is delivered, and you can revoke it from the same
+         screen in WordPress at any time.</p>
+      <button class="primary" type="submit">Send it</button>
+    </form>
+  {% else %}
+    <p class="muted">There's nothing to fill in here - this page is just so you can see what happens next.</p>
+  {% endif %}
+{% endif %}
+<p class="muted">{{ company.legal_name }} · {{ company.postal_address }} · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
+</div>
+{% endblock %}

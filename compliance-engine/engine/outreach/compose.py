@@ -7,7 +7,7 @@ from typing import Any
 from .. import autopilot, plans, schemas
 from ..config import Settings
 from ..db import Database, utcnow
-from ..exposure import money
+from ..exposure import money, value_case
 from ..legal import check_lead
 from ..llm import LLM, LLMCapacityError, LLMError, LLMRefusal
 from ..models import LeadStatus, MessageStatus, Package
@@ -16,12 +16,19 @@ from .compliance import footer, lint_email, new_thread_token
 SYSTEM_PROMPT = """You write short, honest first-contact emails from a small web-accessibility and AI-search agency to
 small-business owners. You are given the scan of their actual website and a small set of dollar figures.
 
-What we sell: an up-front fix, then a monthly fee to keep it fixed. Accessibility drifts back the moment
-new content is added, so lead with the plan in the context and describe the monthly part as what stops the
-problem coming back - a rescan every month, regressions corrected, new pages covered.
+What we sell: an up-front fix, then a small monthly fee to keep it fixed. Accessibility drifts back the
+moment new content is added, so lead with the plan in the context and describe the monthly part as what
+stops the problem coming back - a recheck every month, regressions corrected, new pages covered, and the
+checklist itself kept current as the rules change.
+
+**The exposure_paragraph must make the comparison explicit.** Use the "value" block in the context to say,
+in one or two plain sentences, what they stand to gain or avoid set against what it costs. The price is
+deliberately low next to the numbers, so state both plainly and let the reader draw the conclusion; do not
+add pressure, do not tell them it is a bargain, and do not use the word "only" about money.
 
 Hard rules:
-- Use ONLY dollar figures that appear in the context JSON, written exactly as given. Never invent numbers.
+- Use ONLY dollar figures that appear in the context JSON, written exactly as given. Never invent numbers,
+  and never round them ($9.99 is not $10).
 - You may quote the two percentage scores from the context. Describe them as an automated check of the
   points that apply to their site. Never say or imply that a score means they are or are not legally compliant.
 - When you mention a dollar figure, make clear it is an estimate and say what it is based on.
@@ -75,7 +82,10 @@ def build_context(settings: Settings, lead: dict[str, Any], scan: dict[str, Any]
         "plan": {"id": plan.id, "name": plan.name, "summary": plan.price_summary(), "blurb": plan.blurb,
                  "setup_cents": plan.setup_cents, "monthly_cents": plan.monthly_cents,
                  "setup": money(plan.setup_cents), "monthly": money(plan.monthly_cents),
+                 "first_year": money(plan.first_year_cents()), "first_year_cents": plan.first_year_cents(),
                  "includes": list(plan.includes), "recurring": plan.is_recurring},
+        # What they gain or avoid, against what it costs. The email must state this.
+        "value": value_case(exp, plan.first_year_cents(), plan.monthly_cents),
         "alternatives": [{"id": p.id, "name": p.name, "summary": p.price_summary(),
                           "setup_cents": p.setup_cents, "monthly_cents": p.monthly_cents} for p in others],
         # Kept for older prompts and stored contexts.
@@ -89,7 +99,10 @@ def allowed_figures(ctx: dict[str, Any]) -> list[int]:
     """Every dollar amount the email is permitted to contain."""
     e = ctx["exposure"]
     figures = [e["ada_low_cents"], e["ada_typical_cents"], e["aiseo_annual_low_cents"], e["aiseo_annual_high_cents"]]
-    figures += [ctx["plan"]["setup_cents"], ctx["plan"]["monthly_cents"]]
+    figures += [ctx["plan"]["setup_cents"], ctx["plan"]["monthly_cents"], ctx["plan"]["first_year_cents"]]
+    v = ctx.get("value") or {}
+    figures += [v.get("first_year_cents"), v.get("recoverable_annual_cents"),
+                v.get("settlement_low_cents")]
     for alt in ctx.get("alternatives", []):
         figures += [alt["setup_cents"], alt["monthly_cents"]]
     return [f for f in figures if f]

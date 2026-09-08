@@ -19,10 +19,11 @@ from playwright.sync_api import Browser, Error as PlaywrightError, TimeoutError 
 from ..config import Settings
 from ..db import Database, utcnow
 from ..exposure import compute_exposure
+from ..fixability import Fixability, assess, eligible_to_pitch, wordpress_rest_available
 from ..legal import CrawlPolicy, check_lead, safe_to_fetch
 from ..models import LeadStatus
 from ..prospecting.discover import discover
-from ..standards import CheckResult, Scorecard, headline, score
+from ..standards import CHECKLIST_VERSION, CheckResult, Scorecard, headline, score
 from .ada import PageAudit, merge_audits, run_axe
 from .aiseo import audit_page, measure_web_vitals, parse_robots
 
@@ -54,6 +55,7 @@ class ScanResult:
     contact_source: str | None
     platform: str
     all_emails: list[str]
+    fixability: Fixability | None = None
     error: str | None = None
 
     @property
@@ -200,10 +202,17 @@ def scan_site(url: str, settings: Settings, browser: Browser) -> ScanResult:
         results = _dedupe(results)
         ada_card, seo_card = score(results, "ada"), score(results, "seo")
         disc = discover([(p.url, p.rendered_html) for p in pages], domain, home.headers)
+        # Can we actually change this site for them? Decided here, from evidence, so the
+        # answer is known before anyone is emailed.
+        wp_rest = disc.platform == "wordpress" and wordpress_rest_available(
+            lambda u: _fetch_text(context, u, settings.scanning.page_timeout_ms), origin)
+        fixability = assess(domain=domain, url=home.url, platform=disc.platform, headers=home.headers,
+                            home_html=home.rendered_html, wp_rest=wp_rest)
         return ScanResult(
             url=home.url, domain=domain, pages=pages, results=results, ada=ada_card, seo=seo_card, facts=facts,
             robots_txt=robots_txt if robots_ok else None, contact_email=disc.email,
             contact_source=disc.email_source, platform=disc.platform, all_emails=disc.all_emails,
+            fixability=fixability,
         )
     finally:
         context.close()
@@ -269,6 +278,7 @@ def persist_scan(db: Database, settings: Settings, lead: dict[str, Any], result:
                  kind: str = "baseline") -> int:
     if result.error:
         scan_id = db.insert("scans", {"lead_id": lead["id"], "kind": kind, "status": "failed",
+                                      "checklist_version": CHECKLIST_VERSION,
                                       "error": result.error, "created_at": utcnow()})
         db.log_event("scan_failed", lead["id"], error=result.error)
         return scan_id
@@ -293,7 +303,8 @@ def persist_scan(db: Database, settings: Settings, lead: dict[str, Any], result:
         "lead_id": lead["id"], "kind": kind, "status": "ok",
         "ada_score": result.ada.percent, "aiseo_score": result.seo.percent,
         "ada_summary": ada_summary, "aiseo_summary": seo_summary,
-        "pages": page_index, "exposure": exposure, "created_at": utcnow(),
+        "pages": page_index, "exposure": exposure, "checklist_version": CHECKLIST_VERSION,
+        "created_at": utcnow(),
     })
     for r in result.results:
         c = r.check
@@ -310,6 +321,15 @@ def persist_scan(db: Database, settings: Settings, lead: dict[str, Any], result:
 
     if kind == "baseline":
         updates: dict[str, Any] = {"platform": result.platform}
+        if result.fixability:
+            updates["fixability"] = result.fixability.tier
+            updates["fix_channel"] = result.fixability.channel
+            updates["fix_detail"] = result.fixability.detail
+            if result.fixability.repo:
+                updates["repo"] = result.fixability.repo
+                # The fixer reads the repository from here, so a repo we worked out during
+                # the scan means the customer is never asked for it.
+                db.set_kv(f"lead:{lead['id']}:github_repo", result.fixability.repo)
         if result.contact_email and not lead.get("contact_email"):
             updates["contact_email"] = result.contact_email
             updates["contact_source"] = result.contact_source
@@ -343,6 +363,15 @@ def classify_after_scan(db: Database, settings: Settings, lead_id: int, scan_id:
         db.set_lead_status(lead_id, LeadStatus.EXCLUDED, eligible.reason)
         db.log_event("excluded", lead_id, reason=eligible.reason)
         return LeadStatus.EXCLUDED
+    # Only pitch a site we could genuinely change once they say yes.
+    ok, why = eligible_to_pitch(
+        Fixability(lead.get("fixability") or "unknown", lead.get("fix_channel") or "none",
+                   lead.get("fix_detail") or ""),
+        settings.prospecting.require_fixable)
+    if not ok:
+        db.set_lead_status(lead_id, LeadStatus.NOT_FIXABLE, why)
+        db.log_event("not_fixable", lead_id, reason=why, channel=lead.get("fix_channel"))
+        return LeadStatus.NOT_FIXABLE
     if (scan["ada_score"] or 0) >= settings.pricing.clean_ada_percent and \
        (scan["aiseo_score"] or 0) >= settings.pricing.clean_seo_percent:
         db.set_lead_status(lead_id, LeadStatus.CLEAN)

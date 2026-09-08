@@ -3,7 +3,7 @@
 <h1>Pipeline</h1>
 <div class="grid">
 <div class="card"><h3>Leads</h3><div class="kpi">{{ counts.values()|sum }}</div>
-<div class="muted">new {{ counts.get('new',0) }} · scanned {{ counts.get('scanned',0) }} · queued {{ counts.get('queued',0) }} · no contact {{ counts.get('no_contact',0) }} · clean {{ counts.get('clean',0) }}</div></div>
+<div class="muted">new {{ counts.get('new',0) }} · scanned {{ counts.get('scanned',0) }} · queued {{ counts.get('queued',0) }} · no contact {{ counts.get('no_contact',0) }} · clean {{ counts.get('clean',0) }} · can't fix {{ counts.get('not_fixable',0) }}</div></div>
 <div class="card"><h3>Cold emails sent</h3><div class="kpi">{{ sent }}</div><div class="muted">{{ counts.get('contacted',0) }} awaiting reply</div></div>
 <div class="card"><h3>Replies</h3><div class="kpi">{{ replies }}</div><div class="muted">{% if contacted %}{{ (100*replies/contacted)|round(1) }}% of contacted{% endif %} · engaged {{ counts.get('engaged',0) }} · not interested {{ counts.get('not_interested',0) }} · unsubscribed {{ counts.get('unsubscribed',0) }} · bounced {{ counts.get('bounced',0) }}</div></div>
 <div class="card"><h3>Deals</h3><div class="kpi">{{ fin.paid_deals }}</div><div class="muted">accepted {{ counts.get('accepted',0) }} · paid {{ counts.get('paid',0) }} · delivered {{ counts.get('delivered',0) }} · verified {{ counts.get('verified',0) }}</div></div>

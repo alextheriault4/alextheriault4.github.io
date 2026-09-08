@@ -51,6 +51,18 @@ not a statement that a site is legally compliant, and the report never claims it
 * **We fix it** - yes means the remediation bundle repairs it without the client doing
   anything.
 
+## Editions
+
+The checklist is versioned `YYYY.MM`, because clients on the monthly plan pay for it to stay
+current. When the accessibility guidelines change, or search engines and AI assistants change
+what they read, a check is added here and the version is bumped; every site on a care plan is
+measured against the new list at its next monthly check and told in its report what changed.
+Each check records the edition that introduced it.
+
+| Edition | What changed |
+|---|---|
+| **2026.09** *(current)* | first published checklist: WCAG 2.2 A/AA plus the AI-search and structured-data items (80 checks) |
+
 ## Part 1 - Accessibility
 
 Measured against **WCAG 2.2 Level A and AA**, the standard US courts and the Department of Justice's guidance point to. Organised by the four WCAG principles.
@@ -847,4 +859,4 @@ If you are making a site rather than fixing one, the short version:
 
 ---
 
-*Generated from `engine/standards/checks.py` - 80 checks. Run `python tools/generate_standards.py` after changing the registry.*
+*Generated from `engine/standards/checks.py` - 80 checks, edition 2026.09. Run `python tools/generate_standards.py` after changing the registry.*

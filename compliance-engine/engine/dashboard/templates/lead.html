@@ -18,6 +18,14 @@
 {% if console and thread %}<form method="post" action="/leads/{{ lead.id }}/simulate-reply" style="margin-top:1rem"><textarea name="text" rows="3" placeholder="Simulate a reply from the prospect (console provider only)"></textarea><button style="margin-top:.4rem">Inject reply</button></form>{% endif %}
 </div>
 <div class="card"><h3>Site access (for automatic fixes)</h3>
+<p><strong>How we\'d change it:</strong>
+{% if lead.fixability == 'direct' %}<span class="badge ok">{{ lead.fix_channel }}</span>
+{% elif lead.fixability == 'assisted' %}<span class="badge warn">{{ lead.fix_channel }}</span>
+{% else %}<span class="badge bad">{{ lead.fixability or 'not assessed' }}</span>{% endif %}
+<br><span class="muted">{{ lead.fix_detail or 'not assessed yet' }}</span></p>
+{% if access %}<p class="muted">{{ access.headline }}
+{% if setup_link %}<br>Customer link: <a href="{{ setup_link }}" target="_blank">{{ setup_link }}</a>{% endif %}
+{% if lead.access_granted_at %}<br>Access granted {{ lead.access_granted_at }}.{% endif %}</p>{% endif %}
 <form method="post" action="/leads/{{ lead.id }}/creds">
 <input type="text" name="wp_url" placeholder="WordPress URL" value="{{ creds.wp_url or '' }}"><input type="text" name="wp_user" placeholder="WP user" value="{{ creds.wp_user or '' }}" style="margin-top:.3rem">
 <input type="password" name="wp_app_password" placeholder="WP application password" style="margin-top:.3rem">

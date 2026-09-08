@@ -73,6 +73,43 @@ def aiseo_exposure(aiseo_score: int, category: str | None) -> dict[str, Any]:
     }
 
 
+def value_case(exposure: dict[str, Any], first_year_cents: int, monthly_cents: int = 0) -> dict[str, Any]:
+    """What they stand to gain or avoid, set against what it costs.
+
+    Everything here is arithmetic over figures already in ``exposure`` - nothing new is
+    invented, and each number keeps the estimate label it arrived with. The point of
+    stating it is that at this price the comparison does most of the persuading, so the
+    email never needs to reach for pressure.
+    """
+    revenue = int(exposure.get("aiseo_annual_typical_cents") or 0)
+    settlement_low = int(exposure.get("ada_low_cents") or 0)
+    settlement_typical = int(exposure.get("ada_typical_cents") or 0)
+    cost = max(first_year_cents, 1)
+
+    # How many months of search revenue it takes to cover the first year's cost.
+    months_to_payback = None
+    if revenue > 0:
+        monthly_gain = revenue / 12
+        months_to_payback = max(1, int(round(cost / monthly_gain))) if monthly_gain else None
+
+    return {
+        "first_year_cents": first_year_cents,
+        "first_year": money(first_year_cents),
+        "monthly": money(monthly_cents) if monthly_cents else None,
+        # Recovered search revenue against the price.
+        "recoverable_annual_cents": revenue,
+        "recoverable_annual": money(revenue),
+        "revenue_multiple": round(revenue / cost, 1) if revenue else None,
+        "months_to_payback": months_to_payback,
+        # The cheapest realistic claim against the price.
+        "settlement_low_cents": settlement_low,
+        "settlement_low": money(settlement_low),
+        "settlement_multiple": round(settlement_low / cost, 1) if settlement_low else None,
+        "settlement_typical": money(settlement_typical),
+        "cost_vs_settlement_pct": round(100 * cost / settlement_low, 1) if settlement_low else None,
+    }
+
+
 def compute_exposure(*, ada_score: int, aiseo_score: int, region: str | None, category: str | None,
                      critical_count: int) -> dict[str, Any]:
     ada = ada_exposure(ada_score, region, critical_count)
@@ -84,4 +121,10 @@ def compute_exposure(*, ada_score: int, aiseo_score: int, region: str | None, ca
 
 
 def money(cents: int | None) -> str:
-    return f"${(cents or 0) / 100:,.0f}"
+    """Whole dollars where the cents are zero, exact cents where they are not.
+
+    A $9.99 price rendered as "$10" is a small lie that appears in an email next to a
+    checkout that charges $9.99, so the formatting has to be exact.
+    """
+    cents = cents or 0
+    return f"${cents / 100:,.0f}" if cents % 100 == 0 else f"${cents / 100:,.2f}"
