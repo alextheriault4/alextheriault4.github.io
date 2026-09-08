@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
 import sys
@@ -152,6 +153,32 @@ def cmd_pricing(args: argparse.Namespace) -> None:
               f"{r['conversion_pct']:>7}%{r['revenue_cents'] / 100:>10,.2f}")
 
 
+def cmd_secret(args: argparse.Namespace) -> None:
+    """Store a credential the engine needs, encrypted at rest.
+
+    The only one you have to set yourself is ``github_token`` - the account that opens the
+    pull requests. Client credentials arrive through the customer's own setup page.
+    """
+    from .legal import SECRET_KEYS, SecretBox
+
+    o = _orc()
+    box = SecretBox(o.settings.secrets_key)
+    if not args.set:
+        for key in SECRET_KEYS:
+            print(f"{key:<20}{'set' if o.db.get_kv(key) else '-'}")
+        return
+    if not box.available():
+        print('CE_SECRETS_KEY is unset. Generate one with:\n'
+              '  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"')
+        return
+    value = args.value or getpass.getpass(f"{args.set}: ")
+    if not value:
+        print("nothing entered; not stored")
+        return
+    o.db.set_secret(args.set, value, box)
+    print(f"{args.set} stored, encrypted")
+
+
 def cmd_preflight(args: argparse.Namespace) -> None:
     """Everything that must be true before real emails and real charges are allowed."""
     s = get_settings()
@@ -237,6 +264,10 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--lead", type=int, required=True); a.add_argument("--text", required=True); a.set_defaults(fn=cmd_simulate_reply)
     a = sub.add_parser("simulate-payment", help="mark a placeholder deal as paid"); a.add_argument("--deal", type=int, required=True); a.set_defaults(fn=cmd_simulate_payment)
     sub.add_parser("status", help="print pipeline counts").set_defaults(fn=cmd_status)
+    a = sub.add_parser("secret", help="store a credential (github_token) encrypted at rest, or list what is set")
+    a.add_argument("--set", metavar="KEY", help="which credential to store, e.g. github_token")
+    a.add_argument("--value", help="the value; omit to be prompted without it appearing on screen")
+    a.set_defaults(fn=cmd_secret)
     a = sub.add_parser("pricing", help="what we charge, how each price performed, and what would change it")
     a.add_argument("--set", type=int, metavar="RUNG", help="move to a rung by hand (0 is the most expensive)")
     a.set_defaults(fn=cmd_pricing)

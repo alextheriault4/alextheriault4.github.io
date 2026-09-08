@@ -27,12 +27,15 @@ You need:
   avoids Gmail's habit of hiding mail you sent to yourself.
 
 ```bash
-git clone <your repo> && cd compliance-engine
-git checkout claude/ada-seo-compliance-outreach-z8r1dv
+git clone https://github.com/alextheriault4/alextheriault4.github.io.git
+cd alextheriault4.github.io/compliance-engine
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 playwright install chromium
 ```
+
+Everything is on `main`. Sanity-check the install with `pytest -q` — 137 tests, about five
+minutes, and it needs no keys or network.
 
 If `compliance-engine` isn't on your PATH after that, use `python -m engine` instead —
 identical behaviour.
@@ -369,6 +372,134 @@ compliance-engine run
 
 One process, ticking every 5 minutes. Watch it from the dashboard. `deploy/*.service` has
 systemd units for running the loop and the dashboard permanently.
+
+---
+
+# Part 3 — Going live to real businesses
+
+Everything above was you emailing yourself. This part is the one that involves strangers,
+so it is deliberately more work.
+
+## Step 16. The four things that stop being optional
+
+The moment `CE_LEGAL__ONLY_EMAIL_ADDRESSES` is cleared, `preflight` starts demanding these
+and the send gate stays shut until each is true. They are attestations — setting the flag
+does not do the thing, it records that you did it:
+
+```ini
+CE_LEGAL__BUSINESS_ENTITY_FORMED=true      # an LLC, so a claim lands on the company
+CE_LEGAL__LIABILITY_INSURANCE=true         # errors-and-omissions cover, bought before you take money
+CE_LEGAL__AGREEMENT_REVIEWED_BY_LAWYER=true
+CE_SECRETS_KEY=<generate below>            # client credentials are encrypted at rest
+```
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+What the lawyer should read: the agreement at `/agreement/<deal id>`, the terms at `/terms`,
+and one real drafted email. What you are asking them is narrow — does this promise anything
+we do not deliver, and does anything here read as legal advice. The README's "Legal risk"
+section lists what the engine already refuses to say and why.
+
+Back up `CE_SECRETS_KEY` somewhere other than the server. Lose it and every stored client
+credential is unreadable.
+
+## Step 17. A sending domain that is not your personal Gmail
+
+Cold outreach from `gmail.com` gets filtered, and a spam complaint against your personal
+address is a problem you cannot undo. Buy a separate domain — a lookalike of your main one
+is normal practice — and set up SPF, DKIM and DMARC with the mailbox provider. Then:
+
+```ini
+CE_COMPANY__FROM_EMAIL=alex@outreach.yourcompany.com
+CE_COMPANY__REPLY_DOMAIN=outreach.yourcompany.com
+CE_COMPANY__REPLY_LOCAL_PART=reply
+CE_EMAIL__DOMAIN_VERIFIED=true             # only after you have actually checked the records
+```
+
+Replies come back to `reply+<thread token>@outreach.yourcompany.com`, so that mailbox needs
+a **catch-all** or plus-addressing. Test it by emailing `reply+test@` and confirming it
+arrives before you send anything to a stranger.
+
+Warm the domain up: `CE_OUTREACH__DAILY_SEND_CAP=10` for the first week, 20 the second, then
+40. A new domain sending 40 cold emails on day one is how you get a poor reputation you then
+have to buy your way out of.
+
+## Step 18. The GitHub account that opens the pull requests
+
+Fixes on GitHub-hosted sites are delivered as a pull request from a fork, so the engine
+needs a token for the account whose name will appear on those PRs. Use a dedicated account,
+not your personal one. A fine-grained token with public-repository read and write, or a
+classic token with `public_repo`, is enough:
+
+```bash
+compliance-engine secret --set github_token     # prompts, nothing appears on screen
+compliance-engine secret                        # confirms it is stored
+```
+
+It is encrypted with `CE_SECRETS_KEY`. Then turn the fixer on:
+
+```ini
+CE_AUTONOMY__AUTO_APPLY_FIXES=true
+```
+
+## Step 19. Stripe for real
+
+```ini
+CE_STRIPE__SECRET_KEY=sk_live_...
+CE_STRIPE__WEBHOOK_SECRET=whsec_...        # from the endpoint you create in the dashboard
+CE_STRIPE__PUBLIC_BASE_URL=https://app.yourcompany.com
+CE_AUTONOMY__AUTO_SEND_CHECKOUT=true
+```
+
+Turn on **Stripe Tax** in the Stripe dashboard and register where you have nexus — the
+engine asks Stripe to compute tax, it does not invent rates. Create the webhook endpoint at
+`https://app.yourcompany.com/webhooks/stripe` and subscribe it to
+`checkout.session.completed`, `invoice.paid` and `customer.subscription.deleted`.
+
+`CE_STRIPE__PUBLIC_BASE_URL` is also where report, unsubscribe and setup links point, so it
+has to be reachable from the outside — a small VPS, or `cloudflared tunnel` to start with.
+
+## Step 20. Take the rail off and start small
+
+```ini
+# delete this line entirely
+# CE_LEGAL__ONLY_EMAIL_ADDRESSES=[...]
+CE_MODE=live
+CE_AUTONOMY__AUTO_SEND_OUTREACH=true
+CE_AUTONOMY__AUTO_REPLY=true
+CE_OUTREACH__DAILY_SEND_CAP=10
+```
+
+```bash
+compliance-engine preflight     # must be clean; it names anything missing
+compliance-engine prospect --category dentist --city Springfield --region IL --limit 50
+compliance-engine status
+compliance-engine run
+```
+
+`prospect` pulls from OpenStreetMap for free (no key). Add `CE_PROSPECTING__GOOGLE_PLACES_KEY`
+for much better coverage. Most of what it pulls will be dropped before you ever see it —
+that is the funnel in `MARKET.md` doing its job, and roughly 6% surviving is the expected
+shape, not a fault.
+
+## Step 21. What to look at, and how often
+
+Five minutes on the dashboard, twice a week:
+
+| Look at | You want to see |
+|---|---|
+| **Needs a human** | zero. Anything here is a case the autopilot could not close |
+| **Refunds waiting on you** | the only thing that ever genuinely blocks on you |
+| **Replies** | bounce and complaint rates under the breaker's limits; if the breaker trips, sending stops on its own |
+| **Pricing** | the ladder. It will sit at $99 until 60 emails have gone out, then move on its own if it needs to |
+| **Finance** | charges, fees, tax by state. Export the ledger at tax time |
+| **Notices** | everything the autopilot decided without asking. Worth reading for the first month, skimmable after |
+
+The one thing worth doing by hand early: read the first ten emails it sends before they go,
+by leaving `CE_AUTONOMY__AUTO_SEND_OUTREACH=false` for the first batch. After ten you will
+know whether you trust it, and the compliance lint catches the rest.
 
 ---
 

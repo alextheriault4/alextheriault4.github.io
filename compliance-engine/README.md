@@ -223,6 +223,8 @@ compliance-engine prospect --category plumber --city Springfield --region IL --l
 
 compliance-engine tick                 # scan → draft → "send" to data/outbox/ → ...
 compliance-engine dashboard            # http://127.0.0.1:8787, token from CE_DASHBOARD__ADMIN_TOKEN
+compliance-engine pricing              # the price ladder and how each rung has performed
+compliance-engine secret --set github_token   # the account that opens the pull requests
 ```
 
 In dry run the console email provider writes every outbound message to `data/outbox/` as
@@ -230,7 +232,7 @@ In dry run the console email provider writes every outbound message to `data/out
 
 ```bash
 compliance-engine simulate-reply --lead 1 --text "What would you actually change? Do you need our login?"
-compliance-engine simulate-reply --lead 1 --text "Can you do it for $800?"
+compliance-engine simulate-reply --lead 1 --text "Can you do it for $40?"
 compliance-engine simulate-reply --lead 1 --text "OK go ahead and send the link"
 compliance-engine simulate-payment --deal 1
 compliance-engine tick                 # builds the fix bundle under data/fixes/<domain>/<deal>/ and queues delivery
