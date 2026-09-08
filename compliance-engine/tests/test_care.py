@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from engine import care, plans
+from engine.exposure import money
 from engine.db import Database
 from engine.deals.checkout import (
     CARE_CYCLE_DAYS,
@@ -37,19 +38,22 @@ def test_the_fix_costs_the_same_either_way(settings):
     cat = plans.catalogue(settings)
     assert cat["fix_only"].setup_cents == cat["care"].setup_cents == settings.pricing.care_setup_cents
     assert not cat["fix_only"].is_recurring
-    # A year of monitoring costs less than a quarter of the fix.
-    assert cat["care"].monthly_cents * 12 < cat["care"].setup_cents / 4
+    # The whole first year has to stay inside the range a small business decides on the
+    # spot. Above a couple of hundred dollars it becomes a thing they "look into".
+    assert cat["care"].first_year_cents() <= 30_000
+    # And the monthly has to stay small enough that cancelling is never the obvious saving.
+    assert cat["care"].monthly_cents <= 1_999
 
 
 def test_prices_render_exactly_never_rounded(settings):
     """$9.99 shown as "$10" next to a checkout that charges $9.99 is a small lie."""
-    from engine.exposure import money
-
     cat = plans.catalogue(settings)
-    assert cat["care"].price_summary() == "$499 to fix it, then $9.99/month"
-    assert cat["fix_only"].price_summary() == "$499 once"
-    assert money(999) == "$9.99" and money(49900) == "$499" and money(0) == "$0"
-    assert cat["care"].first_year_cents() == 49900 + 999 * 12
+    assert cat["care"].price_summary() == "$99 to fix it, then $9.99/month"
+    assert cat["fix_only"].price_summary() == "$99 once"
+    assert money(999) == "$9.99" and money(9900) == "$99" and money(0) == "$0"
+    assert cat["care"].first_year_cents() == 9900 + 999 * 12
+    # Whatever the prices are set to, cents are never rounded away.
+    assert "$10" not in cat["care"].price_summary()
 
 
 def test_the_monthly_price_cannot_be_discounted(settings):
@@ -141,7 +145,7 @@ def test_checkout_email_explains_both_charges(care_client, settings):
     db.update("deals", deal_id, checkout_url="https://pay.example/x")
     msg_id = queue_checkout_email(db, settings, deal_id, "tk", None)
     body = db.one("SELECT * FROM messages WHERE id=?", (msg_id,))["body_text"]
-    assert "$499" in body and "$9.99 a month" in body
+    assert money(settings.pricing.care_setup_cents) in body and "$9.99 a month" in body
     assert "cancel it any time in one click" in body
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import autopilot, plans, schemas
+from .. import autopilot, plans, pricing, schemas
 from ..config import Settings
 from ..db import Database, utcnow
 from ..llm import LLM, LLMCapacityError, LLMError, LLMRefusal
@@ -177,6 +177,9 @@ def handle_one(db: Database, settings: Settings, llm: LLM, mail: InboundEmail) -
         return intent
 
     # interested / question / objection_price / objection_other / accept → negotiation agent
+    # Quote from the rung this lead was pinned to when we first wrote to them, not from
+    # whatever the ladder happens to say today.
+    settings = pricing.settings_for_lead(db, settings, lead["id"])
     scan = db.latest_scan(lead["id"])
     if scan is None:
         # We can rescan; that is not a reason to involve anyone.

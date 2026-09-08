@@ -130,8 +130,17 @@ visibility layer — spend a few minutes here:**
 | **Outbox** | Anything queued or held, with the compliance-lint result |
 | **Notices** | Everything the autopilot handled on its own |
 | **Finance** | Revenue, fees, tax by state, ledger export |
+| **Overview → Pricing** | The price ladder: what each rung has been emailed, replied to, sold, and earned, plus what would move it next |
 
-Leave the dashboard running in its own terminal for the rest of this.
+Leave the dashboard running in its own terminal for the rest of this. The same pricing table
+is available without the browser:
+
+```bash
+compliance-engine pricing
+```
+
+Nothing will move it yet — a price is only judged after 60 emails have actually gone out at
+it, and a dry run sends none.
 
 ## Step 6. Draft and "send" the first email
 
@@ -157,12 +166,14 @@ labelled an estimate with sources, and that the unsubscribe line is there.
 
 ```bash
 compliance-engine simulate-reply --lead 1 --text "Interesting. What exactly would you change?"
-compliance-engine simulate-reply --lead 1 --text "That's more than I want to spend. Could you do it for $800?"
+compliance-engine simulate-reply --lead 1 --text "That's more than I want to spend. Could you do it for $40?"
 compliance-engine simulate-reply --lead 1 --text "OK go ahead and send the link"
 ```
 
 Watch the lead page after each one. You'll see the classified intent, the reply it wrote,
-the price held at your floor (not $800), and then a deal at `checkout_sent`.
+the price held at your floor (not $40), and then a deal at `checkout_sent`. The lead page
+also shows which rung of the price ladder that prospect was pinned to; it will not change
+even if the engine later moves the price.
 
 Worth trying the edge cases too — each should resolve itself with **zero** items in "Needs
 a human":

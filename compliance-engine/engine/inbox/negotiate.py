@@ -63,6 +63,14 @@ def _thread_excerpt(thread: list[dict[str, Any]], limit: int = 6) -> list[dict[s
     return out
 
 
+def _stand_down(plan: plans.Plan, setup_cents: int, monthly_cents: int, why: str) -> schemas.NegotiationReply:
+    """No reply, no movement on price, and the reason recorded. Used when the model will
+    not or cannot answer: the autopilot decides what happens next from ``escalate``."""
+    return schemas.NegotiationReply(body_text="", package=plan.id, proposed_price_cents=setup_cents,
+                                    proposed_monthly_cents=monthly_cents, ready_to_close=False,
+                                    escalate=True, escalate_reason=why)
+
+
 def respond(db: Database, settings: Settings, llm: LLM, lead: dict[str, Any], scan: dict[str, Any],
             classification: schemas.ReplyClassification, reply_text: str) -> schemas.NegotiationReply:
     ctx = build_context(settings, lead, scan)
@@ -94,11 +102,9 @@ def respond(db: Database, settings: Settings, llm: LLM, lead: dict[str, Any], sc
     try:
         reply = llm.structured(system=SYSTEM_PROMPT, user=user, schema=schemas.NegotiationReply, effort="medium")
     except LLMRefusal as e:
-        return schemas.NegotiationReply(body_text="", package=package.value, proposed_price_cents=current,
-                                        ready_to_close=False, escalate=True, escalate_reason=f"model refused: {e}")
+        return _stand_down(plan, current_setup, current_monthly, f"model refused: {e}")
     except LLMError as e:
-        return schemas.NegotiationReply(body_text="", package=package.value, proposed_price_cents=current,
-                                        ready_to_close=False, escalate=True, escalate_reason=f"model error: {e}")
+        return _stand_down(plan, current_setup, current_monthly, f"model error: {e}")
     # Enforce the commercial policy regardless of what the model wrote. The model chooses
     # words and which plan to offer; the code decides what may be charged for it.
     chosen = plans.get(settings, reply.package)

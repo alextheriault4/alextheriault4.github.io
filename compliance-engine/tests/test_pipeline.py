@@ -62,15 +62,17 @@ def test_happy_path_to_paid(scanned_lead, settings):
     assert out[-1]["kind"] == "reply" and out[-1]["status"] == "queued", out[-1]["lint"]
 
     # Lowball → clamped to floor, deal proposed at floor
-    _reply(provider, db, lead_id, "Can you do it for $300?")
+    _reply(provider, db, lead_id, "Can you do it for $40?")
     stats = process_inbound(db, settings, llm, provider)
     assert stats.get("objection_price") == 1
     deal = db.open_deal(lead_id)
     assert deal["status"] == "proposed"
-    floor_setup, floor_monthly = plans.floor_for(settings, plans.catalogue(settings)[deal["plan"]])
-    assert deal["price_cents"] == floor_setup          # clamped to the floor, not the $300 they asked for
+    plan = plans.catalogue(settings)[deal["plan"]]
+    floor_setup, floor_monthly = plans.floor_for(settings, plan)
+    assert deal["price_cents"] == floor_setup          # clamped to the floor, not the $40 they asked for
     assert deal["monthly_cents"] == floor_monthly
     assert deal["price_cents"] >= settings.pricing.floor_setup_cents
+    assert deal["price_cents"] <= plan.setup_cents     # and never above list, whatever they offered
 
     # Acceptance → checkout link + checkout email queued
     _reply(provider, db, lead_id, "Ok, go ahead and send the link")

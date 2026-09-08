@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import autopilot, plans, schemas
+from .. import autopilot, plans, pricing, schemas
 from ..config import Settings
 from ..db import Database, utcnow
 from ..exposure import money, value_case
@@ -159,6 +159,10 @@ def compose_initial(db: Database, settings: Settings, llm: LLM, lead_id: int) ->
         db.log_event("excluded", lead_id, reason=eligible.reason)
         return None
 
+    # Pin today's price to this lead. Everything said to them from here on - this email,
+    # the follow-ups, the negotiation, the checkout - is quoted from the pinned rung, so a
+    # later move of the ladder can never change a price they were already given.
+    settings = pricing.settings_for_lead(db, settings, lead_id)
     ctx = build_context(settings, lead, scan)
     token = new_thread_token()
     base_user = "Write the first email for this business.\n\n```json\n" + json.dumps(ctx, indent=1) + "\n```"
@@ -240,6 +244,7 @@ def compose_followup(db: Database, settings: Settings, lead_id: int) -> int | No
     if n >= len(FOLLOWUPS) or n >= len(settings.outreach.followup_days):
         return None
     first = thread[0]
+    settings = pricing.settings_for_lead(db, settings, lead_id)   # the price they were first quoted
     ctx = build_context(settings, lead, scan)
     issue = ctx["top_issues"][0]["plain"] if ctx["top_issues"] else "a handful of accessibility and search gaps"
     text = FOLLOWUPS[n].format(domain=lead["domain"], issue=issue, price=ctx["price"])

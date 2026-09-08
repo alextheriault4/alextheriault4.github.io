@@ -30,6 +30,7 @@ prospect ──► scan ──► draft ──► send ──► replies ──�
 | Inbox | `engine/inbox` | Threads matched by `reply+<token>@` address or Message-ID. Claude classifies intent; code acts: unsubscribe and bounces suppress instantly, "not interested" is honoured permanently, redirects re-target the new person, questions/objections go to the negotiation agent, anything hostile or unclear escalates to you. |
 | Negotiate | `engine/inbox/negotiate.py` | Claude writes the reply inside a fixed policy: list prices, max discount, hard floor; the code clamps the price and never closes a deal without an explicit "yes". |
 | Fixability | `engine/fixability.py` | Decides during the scan whether we could actually change this site (GitHub Pages, Netlify/Vercel/Cloudflare Pages, WordPress REST). Anything we could not change is marked `not_fixable` and never enters outreach. |
+| Pricing | `engine/pricing.py` | Moves the price on its own. Each rung of a configured ladder is scored on the emails actually sent at it and the sales that came back; a rung that gets a fair trial and sells nothing steps down, one that converts unusually well steps up. Prices are pinned per lead, so nobody's quote or subscription is ever re-priced. |
 | Plans | `engine/plans.py` | **Retainer first**: a setup fee to fix it, then a small monthly fee to keep it fixed and keep the checklist current. The one-off is the same fix at the same price, without the monitoring. See "Why a retainer" below. |
 | Checkout | `engine/deals/checkout.py` | Stripe Checkout with Stripe Tax, in subscription mode for care plans (setup line + recurring line on one page) or payment mode for the one-off. Webhooks handle the first payment, each monthly invoice, cancellation and refunds. Placeholder link + "simulate payment" until Stripe is live. |
 | Onboarding | `engine/onboarding.py` | The moment they pay, emails the shortest access path their platform allows and a private `/setup/<token>` page: nothing at all for a known GitHub repo, one pasted repository address otherwise, or a four-click WordPress application password. One reminder after two days; after three we deliver the files rather than keep waiting. |
@@ -72,12 +73,18 @@ It is not a statement of legal compliance, and the report says so in as many wor
 
 ## Why a retainer is the main offer
 
-The default plan is **$499 to fix it, then $9.99/month to keep it fixed** (all configurable).
-The one-off is the same $499 — the fix is the same work either way, so charging more for it
+The default plan is **$99 to fix it, then $9.99/month to keep it fixed** (all configurable).
+The one-off is the same $99 — the fix is the same work either way, so charging more for it
 would only be a penalty for not subscribing. What the $9.99 buys is everything that happens
 after: the monthly recheck, regressions fixed, new pages covered, and the checklist itself
 kept current. These are small businesses; the monthly number is deliberately small enough
 that cancelling is never the obvious move.
+
+$99 is chosen against the customer's real alternative, which is doing nothing or spending an
+afternoon on it themselves. At that price the comparison isn't worth their time — it is less
+than an hour of an agency's, and less than most accessibility overlays charge for a year of
+doing nothing useful. The whole first year comes to $218.88, against a settlement range the
+report puts in the tens of thousands.
 
 Three reasons the retainer leads, in `engine/plans.py`:
 
@@ -100,6 +107,48 @@ list: their next monthly report names the new checks, says whether their site al
 them, and fixes what is auto-fixable — at no extra charge. Bump the version, add checks with
 `since=` set to it, add a line to `VERSION_NOTES`, and rerun
 `python tools/generate_standards.py`; nothing else needs touching.
+
+## The price changes itself if nobody is buying
+
+$99 is a hypothesis, not a fact, and cold outreach tests it for free. `engine/pricing.py`
+keeps a ladder of price points — $199, $149, $99, $79, $49, each with its own monthly — and
+scores the current one on the emails that actually went out at it and the sales that came
+back. Once a rung has had a fair trial (60 emails by default) it is judged: under 0.4% of
+emails turning into sales steps the price *down* a rung; 4% or better steps it *up*, because
+converting that far above the cold-email benchmarks means the number is too low. It moves one
+rung at a time and no more often than every 14 days, so each price gets a clean read.
+
+Three things make this safe to leave running:
+
+* **Nobody's quote moves.** The rung is stamped on a lead the first time we write to them
+  (`leads.price_point`), and every later email, negotiation and checkout for that lead is
+  priced from the stamp. A prospect who takes three weeks to reply pays what the first email
+  said.
+* **No subscription is ever re-priced.** Stripe holds the price the subscription was created
+  with; the ladder has no way to touch it.
+* **The bottom rung is a finding, not a loop.** When the cheapest price also sells nothing,
+  the engine says exactly that on the dashboard and holds, because the answer then is a
+  different message or a different market, not a lower number.
+
+The dashboard carries a pricing card with every rung, its emails, replies, sales, conversion
+and revenue per email sent. `compliance-engine pricing` prints the same table, and
+`compliance-engine pricing --set 3` moves it by hand. `CE_PRICING__ADAPTIVE=false` freezes
+everything at the configured list price.
+
+## How many websites is this, actually
+
+`MARKET.md` has the funnel, sourced and regenerable
+(`python tools/estimate_market.py`). The short version: about **6% of business listings**
+survive every filter — normalisation, the US-only contact policy, a scan that completes, a
+contact address in the HTML, a bad enough score, and above all a site we can actually change
+— which is roughly **60 qualified leads per 1,000 listings pulled**.
+
+Supply is not the constraint. Filling the 40-a-day send cap takes about 650 listings, which
+is thirteen Overpass queries. What limits the business is how many strangers a young sending
+domain should email in a day, and — far more than the scan — how many small-business sites
+run somewhere we have a way in. Wix, Squarespace and GoDaddy are two fifths of the market and
+are excluded on purpose: they expose no editing API to a third party, so the fix could only
+ever be a zip file and instructions, which is not what the email promised.
 
 ## We only email people whose sites we can actually change
 
@@ -326,9 +375,12 @@ See `.env.example` for the full list. Notable ones:
 |---|---|---|
 | `CE_MODE` | `dry_run` | `live` is required for any external side effect |
 | `CE_AUTONOMY__AUTO_SEND_OUTREACH` / `AUTO_REPLY` / `AUTO_SEND_CHECKOUT` / `AUTO_APPLY_FIXES` | `false` | per-stage autonomy; off = held for approval |
-| `CE_PRICING__CARE_SETUP_CENTS` / `CARE_MONTHLY_CENTS` | $499 / $9.99 | the recommended plan |
-| `CE_PRICING__FIX_ONLY_CENTS` | $499 | the same fix, no ongoing cover |
-| `CE_PRICING__FLOOR_SETUP_CENTS` / `FLOOR_MONTHLY_CENTS`, `MAX_DISCOUNT_PCT` | $399 / $9.99, 20 | the negotiation agent can never go below these |
+| `CE_PRICING__CARE_SETUP_CENTS` / `CARE_MONTHLY_CENTS` | $99 / $9.99 | the recommended plan |
+| `CE_PRICING__FIX_ONLY_CENTS` | $99 | the same fix, no ongoing cover |
+| `CE_PRICING__FLOOR_SETUP_CENTS` / `FLOOR_MONTHLY_CENTS`, `MAX_DISCOUNT_PCT` | $49 / $9.99, 20 | the negotiation agent can never go below these |
+| `CE_PRICING__ADAPTIVE` | true | let the engine move the price when the evidence says to |
+| `CE_PRICING__LADDER_SETUP_CENTS` / `LADDER_MONTHLY_CENTS` | $199/$149/$99/$79/$49 | the rungs it may move between |
+| `CE_PRICING__REVIEW_AFTER_SENDS`, `STEP_DOWN_BELOW_CONVERSION_PCT`, `STEP_UP_AT_CONVERSION_PCT`, `MIN_DAYS_BETWEEN_MOVES` | 60, 0.4, 4.0, 14 | when a price is judged, and on what |
 | `CE_PRICING__CLEAN_ADA_PERCENT` / `CLEAN_SEO_PERCENT` | 92 / 88 | a site scoring above both is left alone, not pitched |
 | `CE_PROSPECTING__REQUIRE_FIXABLE` | true | only pitch sites we could actually change (GitHub, Git-backed hosts, WordPress REST) |
 | `CE_OUTREACH__DAILY_SEND_CAP`, `FOLLOWUP_DAYS`, send window, timezone | 40, [3,7], 9-17, America/New_York | cadence |
@@ -349,6 +401,7 @@ compliance-engine/
     autopilot.py                 what happens instead of asking you
     legal.py                     who may be contacted, crawl etiquette, credential encryption
     plans.py                     the retainer and one-off plans, and the pricing floors
+    pricing.py                   the price ladder: moves the price when the evidence says to
     care.py                      the automated monthly retainer cycle
     standards/checks.py          THE CHECKLIST - 80 checks, the source of truth
     standards/scoring.py         earned weight over applicable weight
@@ -358,7 +411,9 @@ compliance-engine/
   tests/                         fixture sites + end-to-end dry-run tests
     fixtures/sites/good_site/    a reference site that scores 100/100 on the checklist
   tools/generate_standards.py    writes STANDARDS.md from the registry
+  tools/estimate_market.py       writes MARKET.md: the funnel, sourced
   STANDARDS.md                   the checklist, generated
+  MARKET.md                      how many leads a day this really finds, generated
   examples/leads.csv  deploy/*.service  .env.example
 ```
 
@@ -366,6 +421,7 @@ compliance-engine/
 
 - New lead source: implement `search(category, city, region, limit)` yielding `Prospect` in `engine/prospecting/sources.py`.
 - **New check**: add a `Check` to `engine/standards/checks.py` (that alone puts it in the scanner, the scores, the report and STANDARDS.md), then either map it to axe rules or add a probe in `engine/scanning/ada.py` / `aiseo.py`. If it is auto-fixable, add a transform in `engine/fixing/patches.py` and map it in `CHECK_FOR_CHANGE`. Run `python tools/generate_standards.py`.
+- **New price point**: add a rung to `CE_PRICING__LADDER_SETUP_CENTS` / `LADDER_MONTHLY_CENTS`; the review picks it up on the next tick and nobody already quoted is affected.
 - **New plan**: add it to `catalogue()` in `engine/plans.py`; checkout, the agreement and the negotiation floors pick it up.
 - New apply channel: add a strategy in `engine/fixing/apply.py` and a branch in `choose_strategy`.
 - Different mailbox: implement `send()` / `fetch_inbound()` in `engine/inbox/provider.py`.

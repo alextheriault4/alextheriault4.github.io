@@ -13,11 +13,14 @@ in three ways, and each one costs you money or credibility:
    of acquiring a client worth much more.
 
 So the default is **remediation fee + monthly care**, with the one-off kept available for
-prospects who genuinely only want the fix. The one-off is priced *higher* than the
-remediation half of the retainer, because without the recurring relationship it has to
-carry its own acquisition cost.
+prospects who genuinely only want the fix. Both cost the same up front, because it is the
+same work; the monthly fee buys what happens afterwards, and charging extra for saying no
+to it would just be a penalty.
 
-Every plan is a row here. Prices come from settings so you can change them without code.
+**Why the price is low.** The customer's real alternative is doing nothing, or spending an
+afternoon on it themselves. At $99 that comparison is not worth their time, which is the
+whole point. Prices come from settings, and ``engine/pricing.py`` may move them on its own
+if the market disagrees - see the price ladder there.
 """
 from __future__ import annotations
 
@@ -136,10 +139,17 @@ def get(settings: Settings, plan_id: str) -> Plan:
     return plans[legacy.get(plan_id, "care")]
 
 
+def _up_to_whole_dollars(cents: int) -> int:
+    """Round a computed floor up to a whole dollar. A floor of $79.20 is arithmetic; $80 is
+    a price. Rounding up never takes the floor below what the discount policy allows."""
+    return -(-cents // 100) * 100
+
+
 def floor_for(settings: Settings, plan: Plan) -> tuple[int, int]:
     """The lowest setup and monthly price the negotiation agent may offer for this plan."""
     pct = (100 - settings.pricing.max_discount_pct) / 100
     setup = max(int(plan.setup_cents * pct), min(plan.setup_cents, settings.pricing.floor_setup_cents))
+    setup = min(plan.setup_cents, _up_to_whole_dollars(setup))
     monthly = max(int(plan.monthly_cents * pct),
                   min(plan.monthly_cents, settings.pricing.floor_monthly_cents)) if plan.monthly_cents else 0
     return setup, monthly

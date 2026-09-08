@@ -10,6 +10,19 @@
 <div class="card"><h3>Net revenue</h3><div class="kpi">{{ fin.net_cents|money }}</div><div class="muted">gross {{ fin.gross_cents|money }} · tax collected {{ fin.sales_tax_collected_cents|money }}</div></div>
 <div class="card"><h3>Needs a human</h3><div class="kpi {{ 'impact-serious' if needs_human else '' }}">{{ needs_human|length }}</div>
 <div class="muted">{{ held }} messages held for approval{% if autopilot.enabled %} · autopilot on, so this should stay at zero{% endif %}</div></div>
+<div class="card"><h3>Price now</h3><div class="kpi">{{ pricing.current.label }}</div>
+<div class="muted">{{ pricing.stats.paid }} sold from {{ pricing.stats.sent }} emails{% if pricing.stats.sent %} · {{ pricing.stats.conversion_pct }}%{% endif %}{% if pricing.since_days %} · {{ pricing.since_days }}d at this price{% endif %}</div></div>
+</div>
+
+<div class="card" style="margin-top:1rem"><h3>Pricing</h3>
+<p class="muted">{{ pricing.next_move }}{% if pricing.current.reason %} · now here because: {{ pricing.current.reason }}{% endif %}</p>
+<table><tr><th>Price</th><th>Emailed</th><th>Replied</th><th>Sold</th><th>Conversion</th><th>Revenue</th><th>Per email</th></tr>
+{% for r in pricing.ladder %}<tr{% if r.current %} style="font-weight:600"{% endif %}>
+<td>{{ r.label }}{% if r.current %} <span class="badge ok">current</span>{% endif %}</td>
+<td>{{ r.sent }}</td><td>{{ r.replied }}</td><td>{{ r.paid }}</td><td>{{ r.conversion_pct }}%</td>
+<td>{{ r.revenue_cents|money }}</td><td>{{ r.revenue_per_send_cents|money }}</td></tr>{% endfor %}</table>
+<p class="muted" style="margin-top:.5rem">Prices are pinned to a lead the first time we write to them, so a move
+here never changes a quote already given and never re-prices an existing subscription.</p>
 </div>
 
 {% if refunds %}

@@ -12,7 +12,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import autopilot, care, onboarding
+from . import autopilot, care, onboarding, pricing
 from .config import Settings, get_settings
 from .db import Database, utcnow
 from .fixing.verify import start_fix, verify_deal
@@ -193,6 +193,21 @@ class Orchestrator:
                 self._fail(deal["lead_id"] if deal else None, "fix", e)
         return n
 
+    def stage_pricing(self, now: datetime | None = None) -> dict[str, Any]:
+        """Ask whether today's price is still the right one.
+
+        Almost every tick this decides nothing - a rung is only judged once enough emails
+        have gone out at it. When it does move, it moves one rung and tells you why.
+        """
+        try:
+            out = pricing.review(self.db, self.settings, now)
+        except Exception as e:  # noqa: BLE001 - pricing must never be able to stop the pipeline
+            self._fail(None, "pricing", e)
+            return {"moved": False, "reason": f"pricing review failed: {e}"}
+        if out.get("moved"):
+            self.db.add_notice(None, f"Price moved to {out['new_label']}", reason=out["reason"])
+        return out
+
     def stage_verify(self, now: datetime | None = None) -> int:
         now_iso = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
         due = self.db.query("SELECT * FROM leads WHERE status='delivered' AND next_action_at IS NOT NULL AND next_action_at <= ?", (now_iso,))
@@ -236,6 +251,7 @@ class Orchestrator:
             report["fixes_started"] = self.stage_fix(now)
             report["verified"] = self.stage_verify(now)
             report["care"] = self.stage_care(now)
+            report["pricing"] = self.stage_pricing(now)
             report["maintenance"] = self.stage_maintenance()
             report["mrr_cents"] = care.mrr_cents(self.db)
         report["open_escalations"] = len(self.db.leads_by_status(LeadStatus.NEEDS_HUMAN))

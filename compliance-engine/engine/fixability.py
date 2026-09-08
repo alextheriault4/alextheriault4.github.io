@@ -39,8 +39,13 @@ HOST_SIGNATURES: list[tuple[str, str, re.Pattern[str]]] = [
     ("netlify", "server", re.compile(r"netlify", re.I)),
     ("vercel", "x-vercel-id", re.compile(r".")),
     ("vercel", "server", re.compile(r"vercel", re.I)),
-    ("cloudflare_pages", "cf-ray", re.compile(r".")),
 ]
+
+# Cloudflare's ``cf-ray`` header is on every site behind their CDN - a large fraction of the
+# whole web, most of it Wix and Squarespace and WordPress - so it says nothing about whether
+# we could edit the site. Only the Pages hostname is real evidence.
+GIT_BACKED_DOMAIN_SUFFIXES = {".pages.dev": "cloudflare_pages", ".netlify.app": "netlify",
+                              ".vercel.app": "vercel", ".github.io": "github_pages"}
 
 BUILDER_PLATFORMS = {"wix", "squarespace", "godaddy", "weebly", "duda", "shopify"}
 
@@ -81,7 +86,13 @@ def guess_github_repo(domain: str, html: str) -> str | None:
     return None
 
 
-def detect_host(headers: dict[str, str] | None) -> str | None:
+def detect_host(headers: dict[str, str] | None, domain: str = "") -> str | None:
+    """Which Git-backed host is serving this, if we can tell. Absence of an answer is the
+    safe answer: it means we do not pitch."""
+    host = (domain or "").lower().removeprefix("www.")
+    for suffix, name in GIT_BACKED_DOMAIN_SUFFIXES.items():
+        if host.endswith(suffix):
+            return name
     headers = {k.lower(): v for k, v in (headers or {}).items()}
     for name, header, pattern in HOST_SIGNATURES:
         value = headers.get(header)
@@ -108,7 +119,15 @@ def wordpress_rest_available(fetch_json: Any, origin: str) -> bool:
 def assess(*, domain: str, url: str, platform: str, headers: dict[str, str] | None,
            home_html: str, wp_rest: bool = False) -> Fixability:
     """Decide how, if at all, we could change this site."""
-    host = detect_host(headers)
+    host = detect_host(headers, domain)
+
+    # A site builder is checked before any host signal. Wix behind a CDN is still Wix, and
+    # mistaking the CDN for the host would have us promise a change we cannot make.
+    if platform in BUILDER_PLATFORMS:
+        return Fixability(
+            "assisted", "header_snippet",
+            f"{platform.title()} exposes no editing API to third parties, so we could only hand them a snippet",
+            evidence={"platform": platform, "host": host})
 
     if host == "github_pages":
         repo = guess_github_repo(domain, home_html)

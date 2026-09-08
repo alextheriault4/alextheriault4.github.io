@@ -129,6 +129,29 @@ def cmd_status(args: argparse.Namespace) -> None:
     }, indent=1))
 
 
+def cmd_pricing(args: argparse.Namespace) -> None:
+    """Where the price is, how each rung performed, and what would move it next."""
+    from . import pricing
+
+    o = _orc()
+    if args.set is not None:
+        try:
+            point = pricing.set_rung(o.db, o.settings, args.set)
+        except ValueError as e:
+            print(e)
+            return
+        print(f"price is now {point.label}")
+        return
+    info = pricing.explain(o.db, o.settings)
+    print(f"now: {info['current']['label']}  ({info['current']['reason'] or 'the configured list price'})")
+    print(f"next: {info['next_move']}\n")
+    print(f"{'rung':<5}{'price':<22}{'emailed':>8}{'replied':>8}{'sold':>6}{'conv':>8}{'revenue':>10}")
+    for r in info["ladder"]:
+        mark = "*" if r["current"] else " "
+        print(f"{mark}{r['rung']:<4}{r['label']:<22}{r['sent']:>8}{r['replied']:>8}{r['paid']:>6}"
+              f"{r['conversion_pct']:>7}%{r['revenue_cents'] / 100:>10,.2f}")
+
+
 def cmd_preflight(args: argparse.Namespace) -> None:
     """Everything that must be true before real emails and real charges are allowed."""
     s = get_settings()
@@ -214,6 +237,9 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--lead", type=int, required=True); a.add_argument("--text", required=True); a.set_defaults(fn=cmd_simulate_reply)
     a = sub.add_parser("simulate-payment", help="mark a placeholder deal as paid"); a.add_argument("--deal", type=int, required=True); a.set_defaults(fn=cmd_simulate_payment)
     sub.add_parser("status", help="print pipeline counts").set_defaults(fn=cmd_status)
+    a = sub.add_parser("pricing", help="what we charge, how each price performed, and what would change it")
+    a.add_argument("--set", type=int, metavar="RUNG", help="move to a rung by hand (0 is the most expensive)")
+    a.set_defaults(fn=cmd_pricing)
     sub.add_parser("preflight", help="check whether it is safe and legal to go live").set_defaults(fn=cmd_preflight)
     a = sub.add_parser("notices", help="what the autopilot handled for you")
     a.add_argument("--all", action="store_true"); a.add_argument("--limit", type=int, default=50)

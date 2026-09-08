@@ -109,6 +109,18 @@ def test_standards_document_matches_the_registry():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_market_estimate_matches_the_settings_it_is_built_from():
+    """MARKET.md quotes the send cap and the price, so a reprice must not leave it stale."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run([sys.executable, "tools/estimate_market.py", "--check"],
+                            cwd=root, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_scoring_arithmetic_is_a_real_fraction():
     from engine.standards import CheckResult, score
 

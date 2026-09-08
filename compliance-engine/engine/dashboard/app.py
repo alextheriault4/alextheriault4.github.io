@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import care, onboarding
+from .. import care, onboarding, pricing
 from ..autopilot import approve_refund, decline_refund, erase_lead_data, pending_refunds
 from ..config import Settings, get_settings
 from ..db import Database, utcnow
@@ -78,6 +78,7 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         gates = {"send email": settings.can_send_email(), "charge cards": settings.can_charge(), "apply fixes": settings.can_apply_fixes()}
         last_report = db.get_kv("last_tick_report")
         return render(request, "index.html", counts=counts, sent=sent, replies=replies, contacted=contacted, held=held,
+                      pricing=pricing.explain(db, settings),
                       needs_human=needs_human, events=events, fin=fin, gates=gates, autonomy=settings.autonomy,
                       notices=db.notices(limit=12), preflight=settings.preflight(), autopilot=settings.autopilot,
                       refunds=pending_refunds(db), self_test=settings.self_test_mode,
@@ -120,8 +121,10 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         access = onboarding.access_state(db, settings, lead)
         setup_link = (onboarding.setup_url(settings, onboarding.setup_token(db, lead_id))
                       if deals else None)
+        quoted = pricing.point_from_key(lead.get("price_point") or "", settings)
         return render(request, "lead.html", lead=lead, scan=scan, verification=verification, findings=findings, thread=thread,
                       deals=deals, fixes=fixes, events=events, creds=creds, access=access, setup_link=setup_link,
+                      quoted=quoted,
                       statuses=[s.value for s in LeadStatus], console=settings.email.provider == "console")
 
     @app.post("/leads/{lead_id}/status", dependencies=[Depends(admin)])

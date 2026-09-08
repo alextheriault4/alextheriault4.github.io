@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS leads (
   fix_detail TEXT,
   repo TEXT,                            -- owner/name when we could work it out
   access_granted_at TEXT,
+  price_point TEXT,                     -- which rung of the price ladder they were quoted
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -192,7 +193,7 @@ class Database:
         wanted = {
             "leads": {"clarify_count": "INTEGER NOT NULL DEFAULT 0", "retry_count": "INTEGER NOT NULL DEFAULT 0",
                       "fixability": "TEXT", "fix_channel": "TEXT", "fix_detail": "TEXT", "repo": "TEXT",
-                      "access_granted_at": "TEXT"},
+                      "access_granted_at": "TEXT", "price_point": "TEXT"},
             "messages": {"approved": "INTEGER NOT NULL DEFAULT 0", "hold_reason": "TEXT"},
             "scans": {"checklist_version": "TEXT"},
             "deals": {

@@ -23,6 +23,8 @@
 {% elif lead.fixability == 'assisted' %}<span class="badge warn">{{ lead.fix_channel }}</span>
 {% else %}<span class="badge bad">{{ lead.fixability or 'not assessed' }}</span>{% endif %}
 <br><span class="muted">{{ lead.fix_detail or 'not assessed yet' }}</span></p>
+{% if quoted %}<p class="muted">Quoted at <b>{{ quoted.label }}</b> - pinned when we first wrote to them, so it
+does not move if the price ladder does.</p>{% endif %}
 {% if access %}<p class="muted">{{ access.headline }}
 {% if setup_link %}<br>Customer link: <a href="{{ setup_link }}" target="_blank">{{ setup_link }}</a>{% endif %}
 {% if lead.access_granted_at %}<br>Access granted {{ lead.access_granted_at }}.{% endif %}</p>{% endif %}

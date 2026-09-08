@@ -40,16 +40,40 @@ class PricingSettings(BaseModel):
     currency: str = "usd"
 
     # Two plans, one price for the work. Small businesses do not want a pricing grid.
-    care_setup_cents: int = 49_900          # $499 to fix everything in the report
+    # $99 is chosen to sit below the point where a small business seriously considers doing
+    # it themselves: it is less than an hour of an agency's time and less than the cheapest
+    # accessibility overlay's annual fee, so the decision is "yes" rather than "let me look
+    # into it". These are the *list* prices; engine/pricing.py may move them, within the
+    # ladder below, if the market says they are wrong.
+    care_setup_cents: int = 9_900           # $99 to fix everything in the report
     care_monthly_cents: int = 999           # $9.99/month to keep it fixed
-    fix_only_cents: int = 49_900            # the same fix, without the monitoring
+    fix_only_cents: int = 9_900             # the same fix, without the monitoring
     minimum_months: int = 0                 # no commitment; cancel any time
 
     # Negotiation limits. There is no room to discount ten dollars, so the monthly is fixed
     # and only the up-front fee can move.
-    floor_setup_cents: int = 39_900
+    floor_setup_cents: int = 4_900
     floor_monthly_cents: int = 999
     max_discount_pct: int = 20
+
+    # -- adaptive pricing (engine/pricing.py) ---------------------------------------
+    # A price is a hypothesis. If a price point gets a fair trial and nobody buys, the
+    # engine steps down the ladder on its own; if it converts unusually well, it steps back
+    # up to find out what the market will bear. Prices are pinned per lead when we first
+    # write to them, so nobody's quote changes underneath them and no existing subscription
+    # is ever re-priced.
+    adaptive: bool = True
+    ladder_setup_cents: list[int] = Field(default_factory=lambda: [19_900, 14_900, 9_900, 7_900, 4_900])
+    ladder_monthly_cents: list[int] = Field(default_factory=lambda: [1_999, 1_499, 999, 999, 499])
+    # A rung is judged only once this many first emails have actually gone out at it.
+    review_after_sends: int = 60
+    # Sales per hundred emails. Below the first number the price steps down; at or above
+    # the second it steps up. Cold-email-to-closed-sale benchmarks put a normal campaign
+    # near 0.2-1%, so 4% means we are leaving money on the table.
+    step_down_below_conversion_pct: float = 0.4
+    step_up_at_conversion_pct: float = 4.0
+    # Never move faster than this, so each rung gets a clean read.
+    min_days_between_moves: int = 14
 
     # A site scoring at or above both of these is left alone rather than pitched.
     clean_ada_percent: int = 92

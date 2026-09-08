@@ -61,6 +61,26 @@ def test_each_host_lands_in_the_right_tier():
     assert nothing.tier == "unknown" and nothing.channel == "none"
 
 
+def test_a_cdn_is_not_a_host_we_can_edit():
+    """Most of the web sits behind Cloudflare, Wix and Squarespace sites included. Reading
+    ``cf-ray`` as "this is Cloudflare Pages" would have us promise changes we cannot make."""
+    cdn_headers = {"server": "cloudflare", "cf-ray": "8b2f00000000-EWR"}
+    assert detect_host(cdn_headers) is None
+
+    wix = assess(domain="d.example", url="https://d.example/", platform="wix",
+                 headers=cdn_headers, home_html="")
+    assert wix.tier == "assisted" and not wix.can_apply
+
+    plain = assess(domain="d.example", url="https://d.example/", platform="static_or_custom",
+                   headers=cdn_headers, home_html="")
+    assert plain.tier == "unknown", "behind a CDN with no other signal, we have no way in"
+
+    # A real Cloudflare Pages site announces itself in the hostname.
+    real = assess(domain="shop.pages.dev", url="https://shop.pages.dev/", platform="static_or_custom",
+                  headers=cdn_headers, home_html="")
+    assert real.tier == "direct" and real.channel == "github_pr"
+
+
 def test_the_gate_states_why_it_refused():
     direct = Fixability("direct", "github_pr", "pull request")
     assisted = Fixability("assisted", "header_snippet", "Wix exposes no editing API")
