@@ -1,23 +1,43 @@
-{% extends "base.html" %}{% block header %}{% endblock %}{% block title %}Service agreement{% endblock %}
+{% extends "base.html" %}{% block header %}{% endblock %}{% block title %}Service agreement - {{ company.name }}{% endblock %}
 {% block body %}<div class="card" style="max-width:800px;margin:2rem auto">
 <h1>Service agreement</h1>
 <p><strong>{{ company.legal_name }}</strong> (&ldquo;we&rdquo;) and <strong>{{ lead.business_name or lead.domain }}</strong>
 (&ldquo;you&rdquo;) for the website at {{ lead.url }}. Paying the invoice accepts these terms.</p>
 
 <h2>1. What we will do</h2>
-<p>We will remediate the issues listed in your report ({{ deal.package }} package). Work is limited to
+<p>We will remediate the issues listed in your report ({{ plan.name }}). Work is limited to
 the pages and files we scanned, plus site-level files (robots.txt, sitemap.xml, llms.txt, structured
 data, and a stylesheet for focus styles and colour contrast). Items marked &ldquo;needs your input&rdquo;
 in the change log are content or hosting decisions that remain yours.</p>
+<ul>{% for item in plan.includes %}<li>{{ item }}</li>{% endfor %}</ul>
 
 <h2>2. Price and payment</h2>
-<p>{{ deal.price_cents|money }} {{ deal.currency|upper }} plus any applicable sales tax, charged once
-through our payment processor. There are no recurring charges.</p>
+{% if deal.monthly_cents %}
+<p><strong>{{ deal.price_cents|money }} {{ deal.currency|upper }}</strong> once, for the initial
+remediation, and <strong>{{ deal.monthly_cents|money }} per month</strong> for ongoing care, plus any
+applicable sales tax. The monthly fee is charged automatically by our payment processor until you
+cancel.</p>
+<p><strong>Cancelling.</strong> You may cancel the monthly care at any time, from the link on any
+receipt or by replying to any of our emails. Cancellation takes effect at the end of the period you
+have already paid for; we do not charge a cancellation fee and we do not require notice. Work already
+delivered stays yours.</p>
+{% else %}
+<p><strong>{{ deal.price_cents|money }} {{ deal.currency|upper }}</strong> plus any applicable sales
+tax, charged once. There are no recurring charges and nothing renews.</p>
+{% endif %}
 
 <h2>3. Delivery</h2>
 <p>Within 10 business days of payment we will either apply the changes using access you provide, or
 deliver a change bundle with instructions for your platform. Follow-up corrections to the delivered
 work are included for 30 days.</p>
+{% if deal.monthly_cents %}
+<h2>3a. What the monthly fee covers</h2>
+<p>Each month, for as long as the plan is active, we rescan your site against the same checklist,
+fix anything that has regressed and anything auto-fixable on pages you have published since, and send
+you a short report showing both scores and what changed. If nothing has regressed, the report says so;
+that month's work is the checking itself. The monthly fee does not include new design work, new pages,
+content writing, or fixing problems introduced by another party after we hand over.</p>
+{% endif %}
 
 <h2>4. Verification, refund, and your only remedy</h2>
 <p>After the changes are live we rescan and send a before/after report. <strong>If the rescan does not

@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from .. import care
 from ..autopilot import approve_refund, decline_refund, erase_lead_data, pending_refunds
 from ..config import Settings, get_settings
 from ..db import Database, utcnow
@@ -224,8 +225,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
     @app.get("/finance", response_class=HTMLResponse, dependencies=[Depends(admin)])
     def finance(request: Request):
         deals = db.query("SELECT d.*, l.domain, l.business_name FROM deals d JOIN leads l ON l.id=d.lead_id ORDER BY d.id DESC LIMIT 200")
-        return render(request, "finance.html", fin=ledger.summary(db), monthly=ledger.monthly(db), tax=ledger.tax_by_region(db),
-                      deals=deals, live=settings.can_charge()[0])
+        return render(request, "finance.html", fin=ledger.summary(db), monthly=ledger.monthly(db),
+                      tax=ledger.tax_by_region(db), deals=deals, live=settings.can_charge()[0],
+                      mrr=care.mrr_cents(db), care_clients=care.active_care_clients(db))
 
     @app.get("/finance/export.csv", dependencies=[Depends(admin)])
     def finance_export():
@@ -271,23 +273,42 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         verification = db.latest_scan(lead["id"], kind="verification")
         if not scan:
             raise HTTPException(404)
-        findings = db.findings_for_scan(scan["id"])
-        after = db.findings_for_scan(verification["id"]) if verification else None
-        return render(request, "report.html", lead=lead, scan=scan, findings=findings, verification=verification,
-                      after=after, token=token, assumptions=scan["exposure"])
+        from ..standards import ALL_CHECKS, BY_ID
+
+        ada = scan["ada_summary"] or {}
+        seo = scan["aiseo_summary"] or {}
+        # A handful of the heavier things that passed, so the report reads as a measurement
+        # rather than a list of complaints.
+        failed_ids = {f["id"] for f in ada.get("failures", []) + seo.get("failures", [])}
+        passed_sample = sorted((c for c in ALL_CHECKS if c.id not in failed_ids and c.detection != "manual"),
+                               key=lambda c: -c.weight)[:6]
+        return render(request, "report.html", lead=lead, scan=scan, verification=verification, token=token,
+                      ada=ada, seo=seo, assumptions=scan["exposure"], total_checks=len(ALL_CHECKS),
+                      passed_sample=passed_sample)
 
     @app.get("/u/{token}", response_class=HTMLResponse)
     def unsubscribe(request: Request, token: str):
         lead = _lead_by_token(token)
-        if lead.get("contact_email"):
-            db.suppress(lead["contact_email"], "unsubscribe", lead["id"])
-        db.execute("UPDATE messages SET status='suppressed' WHERE lead_id=? AND direction='out' AND status IN ('queued','held','draft')", (lead["id"],))
-        db.set_lead_status(lead["id"], LeadStatus.UNSUBSCRIBED, "unsubscribe link")
+        _do_unsubscribe(lead)
         return render(request, "unsubscribe.html", lead=lead)
 
     @app.post("/u/{token}")
     def unsubscribe_post(token: str):
-        return unsubscribe(None, token)  # List-Unsubscribe-Post one-click
+        """One-click unsubscribe (RFC 8058).
+
+        Mail clients POST here with no browser attached, so this does the work and returns
+        plain text rather than trying to render a template without a request.
+        """
+        lead = _lead_by_token(token)
+        _do_unsubscribe(lead)
+        return PlainTextResponse("Unsubscribed. You will not hear from us again.")
+
+    def _do_unsubscribe(lead: dict[str, Any]) -> None:
+        if lead.get("contact_email"):
+            db.suppress(lead["contact_email"], "unsubscribe", lead["id"])
+        db.execute("UPDATE messages SET status='suppressed' WHERE lead_id=? AND direction='out' "
+                   "AND status IN ('queued','held','draft')", (lead["id"],))
+        db.set_lead_status(lead["id"], LeadStatus.UNSUBSCRIBED, "unsubscribe link")
 
     @app.get("/bot", response_class=HTMLResponse)
     def bot_info(request: Request):
@@ -319,7 +340,10 @@ def create_app(settings: Settings | None = None, db: Database | None = None) -> 
         if not deal:
             raise HTTPException(404)
         lead = db.get_lead(deal["lead_id"])
-        return render(request, "agreement.html", deal=deal, lead=lead)
+        from .. import plans as plan_lib
+
+        return render(request, "agreement.html", deal=deal, lead=lead,
+                      plan=plan_lib.get(settings, deal.get("plan") or deal["package"]))
 
     @app.get("/pay/{deal_id}", response_class=HTMLResponse)
     def pay_placeholder(request: Request, deal_id: int):

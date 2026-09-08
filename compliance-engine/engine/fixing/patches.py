@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from urllib.parse import urlparse
+
 from bs4 import BeautifulSoup, Tag
 
 from .. import schemas
@@ -27,6 +29,28 @@ class Change:
     count: int = 1
 
 
+# The transforms below are named after what they do; the report and the score are keyed to
+# the checklist. This maps one to the other so every change points at the check it resolves.
+CHECK_FOR_CHANGE = {
+    "image-alt": "image-alt", "input-image-alt": "image-alt",
+    "html-has-lang": "page-language", "document-title": "page-title", "title-weak": "title-tag",
+    "meta-description-missing": "meta-description", "og-missing": "open-graph",
+    "canonical-missing": "canonical", "structured-data-missing": "structured-data",
+    "faq-schema-missing": "faq-schema", "viewport-missing": "mobile-friendly",
+    "meta-viewport": "zoom-enabled", "label": "form-labels", "button-name": "button-name",
+    "link-name": "link-purpose", "generic-link-text": "link-purpose", "frame-title": "frame-title",
+    "landmark-one-main": "landmarks", "skip-link": "skip-link", "h1-missing": "h1",
+    "heading-order": "heading-order", "empty-heading": "heading-order",
+    "autoplay-media": "audio-control", "focus-visible": "focus-visible",
+    "target-size": "target-size", "color-contrast": "color-contrast", "tabindex": "focus-order",
+    "robots-missing": "robots-exists", "ai-crawlers-blocked": "ai-crawlers-allowed",
+    "sitemap-missing": "sitemap", "llms-txt-missing": "llms-txt",
+    "nap-structured": "nap-structured", "opening-hours": "opening-hours",
+    "social-profiles": "social-profiles", "breadcrumbs": "breadcrumbs",
+    "image-optimisation": "image-optimisation",
+}
+
+
 @dataclass
 class PatchResult:
     html: str
@@ -34,16 +58,102 @@ class PatchResult:
 
     def add(self, rule_id: str, description: str, count: int = 1) -> None:
         if count:
-            self.changes.append(Change(rule_id, description, count))
+            self.changes.append(Change(CHECK_FOR_CHANGE.get(rule_id, rule_id), description, count))
 
 
 def _src_key(img: Tag) -> str:
     return (img.get("src") or img.get("data-src") or "").strip()
 
 
+PHONE_RE = re.compile(r"(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]\d{4}")
+STREET_RE = re.compile(
+    r"\b\d{1,6}\s+[A-Za-z0-9.'\- ]{2,40}\s(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|"
+    r"Way|Ct|Court|Pl|Place|Hwy|Highway|Pkwy|Parkway)\b\.?", re.I)
+CITY_STATE_ZIP_RE = re.compile(r"([A-Z][A-Za-z .'-]{2,30}),\s*([A-Z]{2})\s+(\d{5})(?:-\d{4})?")
+SOCIAL_RE = re.compile(
+    r"https?://(?:www\.)?(facebook|instagram|linkedin|yelp|twitter|x|youtube|tiktok|pinterest)\.com/[^\s\"'<>]+", re.I)
+HOURS_RE = re.compile(
+    r"\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*(?:through|to|-|–|—)\s*(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?[\s,:]*"
+    r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|-|–|—)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
+DAY_NAMES = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday",
+             "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}
+DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def harvest_facts(site_text: str, html_blobs: list[str]) -> dict[str, Any]:
+    """Pull the business facts we can read for ourselves out of the site.
+
+    The model writes prose; facts like a phone number or a street address should never be
+    invented, so they are parsed deterministically and only ever copied, never guessed.
+    """
+    facts: dict[str, Any] = {}
+    phone = PHONE_RE.search(site_text)
+    if phone:
+        facts["phone"] = phone.group(0).strip()
+    street = STREET_RE.search(site_text)
+    if street:
+        facts["street_address"] = street.group(0).strip().rstrip(",")
+    where = CITY_STATE_ZIP_RE.search(site_text)
+    if where:
+        facts["locality"], facts["region"], facts["postal_code"] = (
+            where.group(1).strip(), where.group(2), where.group(3))
+    socials: list[str] = []
+    for blob in html_blobs:
+        for m in SOCIAL_RE.finditer(blob):
+            url = m.group(0).rstrip("\"'),.")
+            if url not in socials:
+                socials.append(url)
+    if socials:
+        facts["same_as"] = socials[:6]
+    hours = parse_hours(site_text)
+    if hours:
+        facts["hours"] = hours
+    return facts
+
+
+def parse_hours(text: str) -> list[dict[str, Any]]:
+    """Turn 'Mon-Fri 8am to 5pm' into schema.org openingHoursSpecification entries."""
+    out: list[dict[str, Any]] = []
+    for m in HOURS_RE.finditer(text):
+        start_day, end_day = m.group(1).lower()[:3], m.group(2).lower()[:3]
+        if start_day not in DAY_ORDER or end_day not in DAY_ORDER:
+            continue
+        i, j = DAY_ORDER.index(start_day), DAY_ORDER.index(end_day)
+        days = DAY_ORDER[i:j + 1] if i <= j else DAY_ORDER[i:] + DAY_ORDER[:j + 1]
+
+        def clock(hour: str, minute: str | None, meridiem: str | None, *, closing: bool) -> str | None:
+            h = int(hour)
+            if h > 24:
+                return None
+            if meridiem:
+                if meridiem.lower() == "pm" and h < 12:
+                    h += 12
+                elif meridiem.lower() == "am" and h == 12:
+                    h = 0
+            elif closing and h < 8:
+                h += 12  # "8 to 5" means 5pm
+            return f"{h:02d}:{int(minute or 0):02d}"
+
+        opens = clock(m.group(3), m.group(4), m.group(5), closing=False)
+        closes = clock(m.group(6), m.group(7), m.group(8), closing=True)
+        if opens and closes and opens < closes:
+            out.append({"@type": "OpeningHoursSpecification",
+                        "dayOfWeek": [DAY_NAMES[d] for d in days], "opens": opens, "closes": closes})
+    return out[:3]
+
+
+def derive_title(existing: str, site_name: str, page_url: str) -> str:
+    """A descriptive title for an inner page, built from what is already there."""
+    stem = re.sub(r"\.(html?|php|aspx?)$", "", (urlparse(page_url).path or "/").rstrip("/").rsplit("/", 1)[-1])
+    label = (existing or "").strip() or stem.replace("-", " ").replace("_", " ").strip().title() or "Page"
+    if site_name.lower() in label.lower():
+        return label[:70]
+    return f"{label} | {site_name}"[:70]
+
+
 def patch_page(html: str, *, page_url: str, is_home: bool, lang: str, meta: schemas.MetaCopy | None,
                profile: schemas.BusinessProfile | None, alt_text: dict[str, str], canonical_url: str | None,
-               site_name: str) -> PatchResult:
+               site_name: str, site_facts: dict[str, Any] | None = None) -> PatchResult:
     soup = BeautifulSoup(html, "lxml")
     res = PatchResult(html="")
     head = soup.head or soup.new_tag("head")
@@ -64,42 +174,53 @@ def patch_page(html: str, *, page_url: str, is_home: bool, lang: str, meta: sche
     elif re.search(r"user-scalable\s*=\s*(no|0)|maximum-scale\s*=\s*1(\.0)?\b", vp.get("content") or "", re.I):
         vp["content"] = "width=device-width, initial-scale=1"
         res.add("meta-viewport", "Re-enabled pinch zoom in the viewport meta tag")
+    # -- title and description, on every page, not just the home page ----------------
     title = soup.title
-    if meta and is_home:
+    existing_title = (title.string or "").strip() if title and title.string else ""
+    weak = existing_title.lower() in ("", "home", "homepage", "welcome", "index", "untitled", "page") \
+        or len(existing_title) < 15
+    if weak:
+        new_title = (meta.title if (meta and is_home) else derive_title(existing_title, site_name, page_url))
         if title is None:
             title = soup.new_tag("title")
             head.insert(0, title)
-            res.add("document-title", "Added a page title")
-        elif (title.string or "").strip().lower() in ("", "home", "homepage", "welcome", "index") or len((title.string or "")) < 15:
-            res.add("title-weak", f"Rewrote the weak title '{(title.string or '').strip()}'")
+            res.add("document-title", f"Added the page title '{new_title}'")
         else:
-            title = None
-        if title is not None:
-            title.string = meta.title
-        if not head.find("meta", attrs={"name": re.compile("^description$", re.I)}):
-            head.append(soup.new_tag("meta", attrs={"name": "description", "content": meta.description}))
+            res.add("title-weak", f"Rewrote the weak title '{existing_title}' as '{new_title}'")
+        title.string = new_title
+    if not head.find("meta", attrs={"name": re.compile("^description$", re.I)}):
+        description = meta.description if (meta and is_home) else _describe_page(soup, site_name, existing_title)
+        if description:
+            head.append(soup.new_tag("meta", attrs={"name": "description", "content": description}))
             res.add("meta-description-missing", "Added a meta description")
-        if not head.find("meta", attrs={"property": re.compile("^og:", re.I)}):
-            for prop, val in (("og:title", meta.title), ("og:description", meta.description), ("og:type", "website"),
-                              ("og:url", canonical_url or page_url), ("og:site_name", site_name)):
-                head.append(soup.new_tag("meta", attrs={"property": prop, "content": val}))
-            res.add("og-missing", "Added Open Graph tags")
-    elif title is None:
-        t = soup.new_tag("title")
-        t.string = site_name
-        head.insert(0, t)
-        res.add("document-title", "Added a page title")
+    if is_home and meta and not head.find("meta", attrs={"property": re.compile("^og:", re.I)}):
+        for prop, val in (("og:title", meta.title), ("og:description", meta.description), ("og:type", "website"),
+                          ("og:url", canonical_url or page_url), ("og:site_name", site_name)):
+            head.append(soup.new_tag("meta", attrs={"property": prop, "content": val}))
+        res.add("og-missing", "Added Open Graph tags")
     if canonical_url and not head.find("link", attrs={"rel": lambda v: v and "canonical" in (v if isinstance(v, list) else [v])}):
         head.append(soup.new_tag("link", attrs={"rel": "canonical", "href": canonical_url}))
         res.add("canonical-missing", "Added a canonical link")
 
     # -- structured data -----------------------------------------------------------
-    if profile and is_home and not soup.find("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
-        head.append(_jsonld_tag(soup, profile, canonical_url or page_url))
+    existing_ld = soup.find("script", attrs={"type": re.compile(r"ld\+json", re.I)})
+    if profile and is_home and not existing_ld:
+        head.append(_jsonld_tag(soup, profile, canonical_url or page_url, site_facts or {}))
         res.add("structured-data-missing", f"Added schema.org {profile.business_type} structured data")
+        if (site_facts or {}).get("phone") or (site_facts or {}).get("street_address"):
+            res.add("nap-structured", "Included the phone number and address found on the site")
+        if (site_facts or {}).get("hours"):
+            res.add("opening-hours", "Added machine-readable opening hours")
+        if (site_facts or {}).get("same_as"):
+            res.add("social-profiles", f"Linked {len(site_facts['same_as'])} official profile(s) with sameAs")
         if profile.faq:
             head.append(_faq_tag(soup, profile))
             res.add("faq-schema-missing", f"Added FAQPage structured data with {len(profile.faq)} questions")
+    if not is_home and not soup.find("script", string=re.compile("BreadcrumbList")):
+        crumbs = _breadcrumb_tag(soup, page_url, canonical_url, site_name)
+        if crumbs is not None:
+            head.append(crumbs)
+            res.add("breadcrumbs", "Added breadcrumb structured data")
 
     # -- images ----------------------------------------------------------------
     n = 0
@@ -117,6 +238,14 @@ def patch_page(html: str, *, page_url: str, is_home: bool, lang: str, meta: sche
         img["alt"] = alt
         n += 1
     res.add("image-alt", "Added alt text to images", n)
+    # Lazy-load everything below the first couple of images so the page stops paying for
+    # pictures nobody has scrolled to yet.
+    lazy = 0
+    for img in soup.find_all("img")[2:]:
+        if not img.get("loading"):
+            img["loading"] = "lazy"
+            lazy += 1
+    res.add("image-optimisation", "Lazy-loaded below-the-fold images", lazy)
     for inp in soup.find_all("input", attrs={"type": re.compile("^image$", re.I)}):
         if not inp.get("alt"):
             inp["alt"] = inp.get("value") or "Submit"
@@ -320,7 +449,9 @@ def contrast_css(findings: list[dict[str, Any]]) -> tuple[str, int]:
     for f in findings:
         if f.get("rule_id") != "color-contrast":
             continue
-        for node in f.get("sample") or []:
+        sample = f.get("sample") or {}
+        nodes = sample.get("evidence", []) if isinstance(sample, dict) else sample
+        for node in nodes:
             data = node.get("data") or {}
             sel = ", ".join(node.get("target") or [])
             fg, bg = _parse_color(data.get("fgColor")), _parse_color(data.get("bgColor"))
@@ -345,20 +476,59 @@ def _label_from_href(href: str) -> str | None:
     return slug.capitalize() if slug and slug != "index" else "Home" if slug in ("", "index") else None
 
 
-def _jsonld_tag(soup: BeautifulSoup, p: schemas.BusinessProfile, url: str) -> Tag:
-    data: dict[str, Any] = {"@context": "https://schema.org", "@type": p.business_type or "LocalBusiness", "name": p.name,
-                            "description": p.description, "url": url}
-    if p.phone:
-        data["telephone"] = p.phone
-    if p.street_address or p.locality:
-        data["address"] = {k: v for k, v in {"@type": "PostalAddress", "streetAddress": p.street_address,
-                                              "addressLocality": p.locality, "addressRegion": p.region,
-                                              "postalCode": p.postal_code}.items() if v}
+def _jsonld_tag(soup: BeautifulSoup, p: schemas.BusinessProfile, url: str,
+                facts: dict[str, Any] | None = None) -> Tag:
+    """Business structured data. Facts parsed from the site win over anything written."""
+    facts = facts or {}
+    phone = p.phone or facts.get("phone")
+    street = p.street_address or facts.get("street_address")
+    locality = p.locality or facts.get("locality")
+    region = p.region or facts.get("region")
+    postal = p.postal_code or facts.get("postal_code")
+    data: dict[str, Any] = {"@context": "https://schema.org", "@type": p.business_type or "LocalBusiness",
+                            "name": p.name, "description": p.description, "url": url}
+    if phone:
+        data["telephone"] = phone
+    if street or locality:
+        data["address"] = {k: v for k, v in {"@type": "PostalAddress", "streetAddress": street,
+                                             "addressLocality": locality, "addressRegion": region,
+                                             "postalCode": postal}.items() if v}
+    if facts.get("hours"):
+        data["openingHoursSpecification"] = facts["hours"]
+    if facts.get("same_as"):
+        data["sameAs"] = facts["same_as"]
     if p.services:
         data["makesOffer"] = [{"@type": "Offer", "itemOffered": {"@type": "Service", "name": s}} for s in p.services]
     tag = soup.new_tag("script", type="application/ld+json")
     tag.string = json.dumps(data, indent=1)
     return tag
+
+
+def _breadcrumb_tag(soup: BeautifulSoup, page_url: str, canonical_url: str | None, site_name: str) -> Tag | None:
+    parsed = urlparse(canonical_url or page_url)
+    path = (parsed.path or "/").strip("/")
+    if not path:
+        return None
+    home = f"{parsed.scheme}://{parsed.netloc}/"
+    label = re.sub(r"\.(html?|php|aspx?)$", "", path.rsplit("/", 1)[-1]).replace("-", " ").replace("_", " ").title()
+    data = {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [
+        {"@type": "ListItem", "position": 1, "name": "Home", "item": home},
+        {"@type": "ListItem", "position": 2, "name": label or "Page", "item": canonical_url or page_url},
+    ]}
+    tag = soup.new_tag("script", type="application/ld+json")
+    tag.string = json.dumps(data, indent=1)
+    return tag
+
+
+def _describe_page(soup: BeautifulSoup, site_name: str, title: str) -> str:
+    """A meta description built from the page's own first paragraph."""
+    for p in soup.find_all("p"):
+        text = p.get_text(" ", strip=True)
+        if len(text) >= 60:
+            return (text[:157].rsplit(" ", 1)[0] + "...") if len(text) > 160 else text
+    heading = soup.find(["h1", "h2"])
+    lead = heading.get_text(" ", strip=True) if heading else (title or "")
+    return f"{lead} - {site_name}"[:160] if lead else ""
 
 
 def _faq_tag(soup: BeautifulSoup, p: schemas.BusinessProfile) -> Tag:

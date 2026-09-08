@@ -12,7 +12,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import autopilot
+from . import autopilot, care
 from .config import Settings, get_settings
 from .db import Database, utcnow
 from .fixing.verify import start_fix, verify_deal
@@ -92,7 +92,7 @@ class Orchestrator:
                     result = scan_site(lead["url"], self.settings, browser)
                     scan_id = persist_scan(self.db, self.settings, lead, result)
                     classify_after_scan(self.db, self.settings, lead["id"], scan_id,
-                                        page_text=result.aiseo_facts.get("text_sample", ""))
+                                        page_text=result.facts.get("text_sample", ""))
                     n += 1
                 except Exception as e:  # noqa: BLE001
                     self._fail(lead["id"], "scan", e)
@@ -116,6 +116,28 @@ class Orchestrator:
             except Exception as e:  # noqa: BLE001
                 self._fail(lead["id"], "draft", e)
         return n
+
+    def stage_care(self, now: datetime | None = None) -> dict[str, int]:
+        """Deliver the monthly retainer for every client whose cycle is due."""
+        due = care.due_deals(self.db, now)
+        if not due:
+            return {"cycles": 0}
+        stats = {"cycles": 0, "regressions": 0, "fixed": 0, "failed": 0}
+        with open_browser(self.settings.scanning) as browser:
+            for deal in due:
+                try:
+                    out = care.run_cycle(self.db, self.settings, self.llm, browser, deal, now)
+                except Exception as e:  # noqa: BLE001 - one client's bad month never stops the rest
+                    self._fail(deal["lead_id"], "care", e)
+                    stats["failed"] += 1
+                    continue
+                if out.get("ok"):
+                    stats["cycles"] += 1
+                    stats["regressions"] += len(out.get("regressions", []))
+                    stats["fixed"] += len(out.get("fixed", []))
+                else:
+                    stats["failed"] += 1
+        return stats
 
     def stage_maintenance(self) -> dict[str, int]:
         """Housekeeping that limits what we are holding: old snapshots of other people's
@@ -211,7 +233,9 @@ class Orchestrator:
             report["send"] = self.stage_send(now)
             report["fixes_started"] = self.stage_fix()
             report["verified"] = self.stage_verify(now)
+            report["care"] = self.stage_care(now)
             report["maintenance"] = self.stage_maintenance()
+            report["mrr_cents"] = care.mrr_cents(self.db)
         report["open_escalations"] = len(self.db.leads_by_status(LeadStatus.NEEDS_HUMAN))
         report["seconds"] = round(time.monotonic() - t0, 1)
         self.db.set_kv("last_tick", utcnow())

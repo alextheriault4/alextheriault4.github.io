@@ -35,12 +35,37 @@ class CompanySettings(BaseModel):
 
 
 class PricingSettings(BaseModel):
+    """Prices, in US cents. See ``engine/plans.py`` for why the retainer leads."""
+
     currency: str = "usd"
+
+    # Recommended: fix it now, then keep it fixed.
+    care_setup_cents: int = 99_000          # $990 remediation
+    care_monthly_cents: int = 24_900        # $249/month care
+    care_ada_setup_cents: int = 74_900
+    care_ada_monthly_cents: int = 17_900
+    care_seo_setup_cents: int = 59_900
+    care_seo_monthly_cents: int = 14_900
+    # No ongoing cover, so it carries its own acquisition cost.
+    fix_only_cents: int = 179_000
+    minimum_months: int = 3
+
+    # Negotiation limits.
+    floor_setup_cents: int = 59_000
+    floor_monthly_cents: int = 14_900
+    max_discount_pct: int = 20
+
+    # A site scoring at or above both of these is left alone rather than pitched.
+    clean_ada_percent: int = 92
+    clean_seo_percent: int = 88
+    # Above this in one area, we pitch only the other half.
+    strong_percent: int = 85
+
+    # Legacy one-off package prices, still honoured for deals created before plans existed.
     ada_cents: int = 149_000
     aiseo_cents: int = 99_000
     bundle_cents: int = 199_000
     floor_cents: int = 99_000
-    max_discount_pct: int = 20
 
 
 class AutonomySettings(BaseModel):

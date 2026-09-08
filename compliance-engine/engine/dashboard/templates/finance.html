@@ -4,7 +4,14 @@
 <div class="grid"><div class="card"><h3>Gross</h3><div class="kpi">{{ fin.gross_cents|money }}</div></div><div class="card"><h3>Refunds</h3><div class="kpi">{{ fin.refunds_cents|money }}</div></div>
 <div class="card"><h3>Processing fees (est.)</h3><div class="kpi">{{ fin.fees_cents|money }}</div></div><div class="card"><h3>Net</h3><div class="kpi">{{ fin.net_cents|money }}</div></div>
 <div class="card"><h3>Sales tax collected</h3><div class="kpi">{{ fin.sales_tax_collected_cents|money }}</div><div class="muted">calculated and collected by Stripe Tax; remit per your registrations</div></div>
-<div class="card"><h3>Paid deals</h3><div class="kpi">{{ fin.paid_deals }}</div><div class="muted">avg {{ fin.avg_deal_cents|money }}</div></div></div>
+<div class="card"><h3>Paid deals</h3><div class="kpi">{{ fin.paid_deals }}</div><div class="muted">avg {{ fin.avg_deal_cents|money }}</div></div>
+<div class="card"><h3>Monthly recurring</h3><div class="kpi">{{ mrr|money }}</div><div class="muted">{{ care_clients|length }} client(s) on care · {{ (mrr * 12)|money }}/yr run rate</div></div></div>
+
+{% if care_clients %}<h2>Care clients</h2><div class="card"><table>
+<tr><th>Client</th><th>Plan</th><th>Monthly</th><th>Cycles run</th><th>Next check</th></tr>
+{% for c in care_clients %}<tr><td><a href="/leads/{{ c.lead_id }}">{{ c.business_name or c.domain }}</a></td>
+<td>{{ c.plan or c.package }}</td><td>{{ c.monthly_cents|money }}</td><td>{{ c.care_cycles }}</td>
+<td class="muted">{{ (c.next_care_at or '')[:10] }}</td></tr>{% endfor %}</table></div>{% endif %}
 <p><a href="/finance/export.csv">Download ledger CSV</a> for your accountant.</p>
 <div class="row"><div class="card"><h3>By month</h3><table><tr><th>Month</th><th>Charges</th><th>Refunds</th><th>Fees</th><th>Tax</th><th>Net</th></tr>
 {% for m in monthly %}<tr><td>{{ m.month }}</td><td>{{ m.get('charge',0)|money }}</td><td>{{ m.get('refund',0)|money }}</td><td>{{ m.get('processing_fee',0)|money }}</td><td>{{ m.get('sales_tax',0)|money }}</td><td>{{ m.net_cents|money }}</td></tr>{% endfor %}</table></div>

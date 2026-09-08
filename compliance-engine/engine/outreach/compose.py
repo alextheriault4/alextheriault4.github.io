@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import autopilot, schemas
+from .. import autopilot, plans, schemas
 from ..config import Settings
 from ..db import Database, utcnow
 from ..exposure import money
@@ -16,8 +16,14 @@ from .compliance import footer, lint_email, new_thread_token
 SYSTEM_PROMPT = """You write short, honest first-contact emails from a small web-accessibility and AI-search agency to
 small-business owners. You are given the scan of their actual website and a small set of dollar figures.
 
+What we sell: an up-front fix, then a monthly fee to keep it fixed. Accessibility drifts back the moment
+new content is added, so lead with the plan in the context and describe the monthly part as what stops the
+problem coming back - a rescan every month, regressions corrected, new pages covered.
+
 Hard rules:
 - Use ONLY dollar figures that appear in the context JSON, written exactly as given. Never invent numbers.
+- You may quote the two percentage scores from the context. Describe them as an automated check of the
+  points that apply to their site. Never say or imply that a score means they are or are not legally compliant.
 - When you mention a dollar figure, make clear it is an estimate and say what it is based on.
 - Never guarantee compliance, never say "certified", never say or imply they will be sued or fined, never manufacture urgency.
 - Never use the words: guarantee, certified, urgent, penalty, fine, final notice, legal notice, act now.
@@ -27,31 +33,37 @@ Hard rules:
 Return the structured fields only."""
 
 
-def recommend_package(ada_score: int, aiseo_score: int) -> Package:
-    if ada_score < 70 and aiseo_score < 70:
-        return Package.BUNDLE
-    if ada_score < 70:
-        return Package.ADA
-    return Package.AISEO
-
-
-def price_for(settings: Settings, package: Package) -> int:
-    return {Package.ADA: settings.pricing.ada_cents, Package.AISEO: settings.pricing.aiseo_cents,
-            Package.BUNDLE: settings.pricing.bundle_cents}[package]
-
-
 def build_context(settings: Settings, lead: dict[str, Any], scan: dict[str, Any]) -> dict[str, Any]:
     exp = scan["exposure"]
-    ada = scan["ada_summary"]
-    seo = scan["aiseo_summary"]
-    package = recommend_package(scan["ada_score"], scan["aiseo_score"])
-    price = price_for(settings, package)
-    top = (ada.get("top", []) + seo.get("top", []))
-    top.sort(key=lambda i: {"critical": 0, "serious": 1, "moderate": 2, "minor": 3}.get(i["impact"], 9))
+    ada = scan["ada_summary"] or {}
+    seo = scan["aiseo_summary"] or {}
+    plan = plans.recommend(settings, scan["ada_score"], scan["aiseo_score"])
+    others = plans.alternatives(settings, plan)
+
+    def top_from(summary: dict[str, Any], area: str) -> list[dict[str, Any]]:
+        rows = []
+        for f in summary.get("failures", []):
+            # A short, concrete phrase for the email: what was actually found, falling back
+            # to the check's name. The full explanation belongs in the report, not the pitch.
+            detail = (f.get("detail") or "").strip().rstrip(".")
+            plain = f.get("failure_phrase") or f["title"].lower()
+            rows.append({"kind": area, "rule_id": f["id"], "title": f["title"], "plain": plain,
+                         "detail": detail, "weight": f.get("weight", 0), "count": f.get("count", 0),
+                         "why": f.get("why", ""),
+                         "impact": "critical" if f.get("weight", 0) >= 9 else
+                                   "serious" if f.get("weight", 0) >= 6 else "moderate"})
+        return rows
+
+    top = top_from(ada, "ada") + top_from(seo, "seo")
+    top.sort(key=lambda i: -i["weight"])
     return {
         "domain": lead["domain"], "business_name": lead.get("business_name"), "category": lead.get("category"),
         "city": lead.get("city"), "region": lead.get("region"), "platform": lead.get("platform"),
         "ada_score": scan["ada_score"], "aiseo_score": scan["aiseo_score"],
+        "ada_band": ada.get("band", ""), "seo_band": seo.get("band", ""),
+        "ada_passed": ada.get("passed"), "ada_applicable": ada.get("checks_applicable"),
+        "seo_passed": seo.get("passed"), "seo_applicable": seo.get("checks_applicable"),
+        "fixable_count": (ada.get("fixable_count") or 0) + (seo.get("fixable_count") or 0),
         "top_issues": top[:4],
         "exposure": {
             "ada_low_cents": exp["ada_low_cents"], "ada_typical_cents": exp["ada_typical_cents"],
@@ -60,14 +72,27 @@ def build_context(settings: Settings, lead: dict[str, Any], scan: dict[str, Any]
             "aiseo_annual_low": money(exp["aiseo_annual_low_cents"]), "aiseo_annual_high": money(exp["aiseo_annual_high_cents"]),
             "aiseo_annual_low_cents": exp["aiseo_annual_low_cents"], "aiseo_annual_high_cents": exp["aiseo_annual_high_cents"],
         },
-        "recommended_package": package.value, "price": money(price), "price_cents": price,
+        "plan": {"id": plan.id, "name": plan.name, "summary": plan.price_summary(), "blurb": plan.blurb,
+                 "setup_cents": plan.setup_cents, "monthly_cents": plan.monthly_cents,
+                 "setup": money(plan.setup_cents), "monthly": money(plan.monthly_cents),
+                 "includes": list(plan.includes), "recurring": plan.is_recurring},
+        "alternatives": [{"id": p.id, "name": p.name, "summary": p.price_summary(),
+                          "setup_cents": p.setup_cents, "monthly_cents": p.monthly_cents} for p in others],
+        # Kept for older prompts and stored contexts.
+        "recommended_package": plan.id, "price": plan.price_summary(),
+        "price_cents": plan.setup_cents or plan.monthly_cents,
         "turnaround": "10 business days", "company": settings.company.name,
     }
 
 
 def allowed_figures(ctx: dict[str, Any]) -> list[int]:
+    """Every dollar amount the email is permitted to contain."""
     e = ctx["exposure"]
-    return [e["ada_low_cents"], e["ada_typical_cents"], e["aiseo_annual_low_cents"], e["aiseo_annual_high_cents"], ctx["price_cents"]]
+    figures = [e["ada_low_cents"], e["ada_typical_cents"], e["aiseo_annual_low_cents"], e["aiseo_annual_high_cents"]]
+    figures += [ctx["plan"]["setup_cents"], ctx["plan"]["monthly_cents"]]
+    for alt in ctx.get("alternatives", []):
+        figures += [alt["setup_cents"], alt["monthly_cents"]]
+    return [f for f in figures if f]
 
 
 def report_url(settings: Settings, token: str) -> str:

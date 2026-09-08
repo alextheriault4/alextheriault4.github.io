@@ -7,7 +7,7 @@ from typing import Any
 
 from playwright.sync_api import Browser
 
-from .. import autopilot
+from .. import autopilot, plans
 from ..config import Settings
 from ..db import Database, utcnow
 from ..llm import LLM, LLMCapacityError
@@ -129,12 +129,17 @@ def verify_deal(db: Database, settings: Settings, browser: Browser, deal_id: int
     if result.error:
         return {"verified": False, "error": result.error}
     before_ada, before_seo = fix["before_ada"] or 0, fix["before_aiseo"] or 0
-    ada_goal = deal["package"] in ("ada", "bundle")
-    seo_goal = deal["package"] in ("aiseo", "bundle")
-    # "Resolved" = a real jump, a decent absolute score, and nothing critical left in the area we were paid for.
-    critical_left = {f.kind for f in result.findings if f.impact == "critical"}
+    covers = plans.get(settings, deal.get("plan") or deal["package"]).covers
+    ada_goal, seo_goal = "ada" in covers, "seo" in covers
+    # "Resolved" = a real jump, a decent absolute score, and nothing heavy that we promised
+    # to fix still failing. Heavy failures needing the client's own content (a phone number
+    # they don't publish anywhere) are listed as "needs your input" and don't block: we
+    # cannot invent facts, and holding their money over it would be the dishonest choice.
+    critical_left = {r.check.area for r in (result.ada.critical_failures if result.ada else []) +
+                     (result.seo.critical_failures if result.seo else [])
+                     if r.check.auto_fixable}
     improved = ((not ada_goal or (result.ada_score >= max(before_ada + 15, 70) and "ada" not in critical_left)) and
-                (not seo_goal or (result.aiseo_score >= max(before_seo + 15, 70) and "aiseo" not in critical_left)))
+                (not seo_goal or (result.aiseo_score >= max(before_seo + 15, 70) and "seo" not in critical_left)))
     db.update("fixes", fix["id"], after_ada=result.ada_score, after_aiseo=result.aiseo_score)
     cmp = {"verified": improved, "scan_id": scan_id, "before": {"ada": before_ada, "aiseo": before_seo},
            "after": {"ada": result.ada_score, "aiseo": result.aiseo_score}}

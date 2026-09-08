@@ -78,3 +78,14 @@ def browser():
 
     with open_browser(ScanningSettings()) as b:
         yield b
+
+
+def care_deal(db, settings, lead_id):
+    """A paid care-plan deal, the way the pipeline creates one."""
+    from engine import plans
+    from engine.deals.checkout import mark_paid, open_or_create_deal
+
+    plan = plans.catalogue(settings)["care"]
+    deal = open_or_create_deal(db, lead_id, plan, plan.setup_cents, plan.monthly_cents, "usd")
+    mark_paid(db, settings, deal["id"], payment_intent="pi_x", amount_total_cents=deal["price_cents"])
+    return db.one("SELECT * FROM deals WHERE id=?", (deal["id"],))

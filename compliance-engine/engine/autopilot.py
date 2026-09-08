@@ -85,16 +85,26 @@ def safe_outreach_paragraphs(ctx: dict[str, Any]) -> list[str]:
     listed = "; ".join(i.get("plain", "") for i in issues[:3] if i.get("plain"))
     domain = ctx.get("domain", "your website")
     exposure = ctx.get("exposure", {})
+    plan = ctx.get("plan", {})
+    scores = ""
+    if ctx.get("ada_score") is not None:
+        scores = (f" It scored {ctx['ada_score']}% on the accessibility checks and "
+                  f"{ctx['aiseo_score']}% on the search and AI ones.")
+    price = (f"{plan.get('setup')} to fix everything the report lists, then {plan.get('monthly')} a month"
+             if plan.get("monthly_cents") else f"a flat {plan.get('setup')}")
     return [
         f"I ran an automated accessibility and search check on {domain} this week and thought the "
-        f"results were worth passing along.",
+        f"results were worth passing along.{scores}",
         (f"The scan flagged a few things: {listed}." if listed
          else "The scan flagged a handful of accessibility and search issues."),
         (f"For context, settlements in web accessibility claims against small businesses have been "
          f"reported in the {exposure.get('ada_low', '')} to {exposure.get('ada_typical', '')} range once legal "
          f"fees are counted. That is an estimate from published figures, not a prediction about you."),
-        f"We fix the items the report lists for a flat {ctx.get('price')} ({ctx.get('recommended_package')} package), "
-        f"normally within {ctx.get('turnaround', '10 business days')}, and rescan afterwards so you can see the change.",
+        f"We fix the items the report lists for {price}. The monthly part is what keeps it fixed: we "
+        f"recheck the site every month and correct anything that slips, including on new pages."
+        if plan.get("monthly_cents") else
+        f"We fix the items the report lists for {price}, normally within "
+        f"{ctx.get('turnaround', '10 business days')}, and rescan afterwards so you can see the change.",
         "If you would like the full report, or would like us to go ahead, just reply to this email.",
     ]
 

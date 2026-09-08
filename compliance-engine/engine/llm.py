@@ -348,18 +348,28 @@ class FakeLLM:
         issue_text = "; ".join(i.get("plain", i.get("rule_id", "")) for i in issues) or "several accessibility and search issues"
         exp = ctx.get("exposure", {})
         low, high = exp.get("ada_low_cents"), exp.get("ada_typical_cents")
-        pkg = ctx.get("recommended_package", "bundle")
-        price = ctx.get("price_cents", 0)
+        plan = ctx.get("plan", {})
+        setup, monthly = plan.get("setup_cents", 0), plan.get("monthly_cents", 0)
+        offer = (f"We fix exactly what the report lists for {_money(setup)}, then {_money(monthly)} a month to keep "
+                 f"it that way: we recheck the site every month, correct anything that slips, and cover new pages "
+                 f"as you publish them."
+                 if monthly else
+                 f"We fix exactly what the report lists for a flat {_money(setup)}, delivered within 10 business "
+                 f"days, with a before-and-after rescan so you can see the difference.")
         return schemas.OutreachDraft(
             subject=f"A few fixable issues on {ctx.get('domain', 'your website')}",
-            opening=f"I ran an automated check on {ctx.get('domain')} this week while looking at {ctx.get('category', 'local')} businesses in {ctx.get('city', 'your area')}.",
-            findings_paragraph=f"The scan flagged {issue_text}. These are the kinds of gaps that keep screen-reader users from using the site and keep AI assistants from recommending {biz}.",
+            opening=f"I ran an automated check on {ctx.get('domain')} this week while looking at "
+                    f"{ctx.get('category', 'local')} businesses in {ctx.get('city', 'your area')}. It scored "
+                    f"{ctx.get('ada_score')}% on the accessibility checks and {ctx.get('aiseo_score')}% on the "
+                    f"search and AI ones.",
+            findings_paragraph=f"The scan flagged {issue_text}. These are the kinds of gaps that keep screen-reader "
+                               f"users from using the site and keep AI assistants from recommending {biz}.",
             exposure_paragraph=(
                 f"For context: web-accessibility demand letters and suits against small businesses commonly settle in the "
                 f"{_money(low)} to {_money(high)} range once legal fees are included (estimate, sources linked below)."
                 if low and high else "These gaps have real costs, detailed below."
             ),
-            offer_paragraph=f"We fix exactly what the report lists, for a flat {_money(price)} ({pkg} package), delivered within 10 business days, with a before-and-after rescan so you can see the difference.",
+            offer_paragraph=offer,
             call_to_action="If you'd like the full report or want us to go ahead, just reply to this email.",
         )
 
@@ -404,36 +414,52 @@ class FakeLLM:
 
     def _fake_NegotiationReply(self, ctx: dict[str, Any], user: str) -> schemas.NegotiationReply:
         intent = ctx.get("intent", "question")
-        pkg = ctx.get("package", "bundle")
-        current = int(ctx.get("current_price_cents", 0))
-        floor = int(ctx.get("floor_cents", current))
-        min_allowed = int(ctx.get("min_allowed_cents", floor))
+        plan = ctx.get("plan", ctx.get("package", "care"))
+        setup = int(ctx.get("current_setup_cents", ctx.get("current_price_cents", 0)) or 0)
+        monthly = int(ctx.get("current_monthly_cents", 0) or 0)
+        min_setup = int(ctx.get("min_setup_cents", ctx.get("min_allowed_cents", setup)) or 0)
+        min_monthly = int(ctx.get("min_monthly_cents", 0) or 0)
         counter = ctx.get("counter_offer_cents")
-        first = (ctx.get("contact_name") or "there")
+        first = ctx.get("contact_name") or "there"
+
+        def price_phrase(s: int, m: int) -> str:
+            if s and m:
+                return f"{_money(s)} to fix it, then {_money(m)} a month"
+            return _money(m) + " a month" if m else _money(s)
+
         if intent == "accept":
             return schemas.NegotiationReply(
-                body_text=f"Great, thank you. I'll send the secure payment link in a separate email right after this one. Once it's paid we start immediately and you'll have the before/after report within 10 business days.",
-                package=pkg, proposed_price_cents=current, ready_to_close=True,
+                body_text="Great, thank you. I'll send the secure payment link in a separate email right after "
+                          "this one. Once it's paid we start immediately and you'll have the before/after report "
+                          "within 10 business days, then a check every month after that.",
+                package=plan, proposed_price_cents=setup, proposed_monthly_cents=monthly, ready_to_close=True,
             )
         if intent == "objection_price":
-            if counter and counter >= min_allowed:
-                price = int(counter)
-                body = f"Understood. I can do the {pkg} package for {_money(price)} flat, everything in the report included. If that works, reply 'go ahead' and I'll send the payment link."
+            if counter and counter >= min_setup:
+                new_setup, new_monthly = int(counter), monthly
             else:
-                price = min_allowed
-                body = f"I hear you on budget. The lowest I can go on the {pkg} package is {_money(price)}, which still covers every item in the report plus the verification rescan. If that works, reply 'go ahead' and I'll send the payment link."
-            return schemas.NegotiationReply(body_text=body, package=pkg, proposed_price_cents=price, ready_to_close=False)
-        if intent in ("objection_other",):
+                new_setup, new_monthly = min_setup, min_monthly
+            body = (f"I hear you on budget. The lowest I can go is {price_phrase(new_setup, new_monthly)}. "
+                    f"The monthly part is what stops it drifting back: we rescan every month, fix anything that "
+                    f"regressed that week, and cover new pages as you publish them. If that works, reply "
+                    f"'go ahead' and I'll send the payment link.")
+            return schemas.NegotiationReply(body_text=body, package=plan, proposed_price_cents=new_setup,
+                                            proposed_monthly_cents=new_monthly, ready_to_close=False)
+        if intent == "objection_other":
             return schemas.NegotiationReply(
-                body_text="", package=pkg, proposed_price_cents=current, ready_to_close=False,
-                escalate=True, escalate_reason="Non-price objection or hostile tone; human should review.",
+                body_text="", package=plan, proposed_price_cents=setup, proposed_monthly_cents=monthly,
+                ready_to_close=False, escalate=True,
+                escalate_reason="Non-price objection or hostile tone; human should review.",
             )
-        # question / interested
         qs = ctx.get("questions") or []
-        answer = " ".join(f"On '{q}': {ctx.get('faq_hint', 'happy to walk through the details; the short version is that we change only what the report lists and you approve every change before it goes live.')}" for q in qs[:2]) or "Happy to share more."
+        answer = " ".join(
+            f"On '{q}': we change only what the report lists, and you approve every change before it goes live."
+            for q in qs[:2]) or "Happy to share more."
         return schemas.NegotiationReply(
-            body_text=f"Hi {first}, thanks for getting back to me. {answer} The full report is attached as a link above. The {pkg} package is {_money(current)} flat; reply 'go ahead' whenever you're ready and I'll send the payment link.",
-            package=pkg, proposed_price_cents=current, ready_to_close=False,
+            body_text=f"Hi {first}, thanks for getting back to me. {answer} The full report is linked above. "
+                      f"It's {price_phrase(setup, monthly)}; reply 'go ahead' whenever you're ready and I'll "
+                      f"send the payment link.",
+            package=plan, proposed_price_cents=setup, proposed_monthly_cents=monthly, ready_to_close=False,
         )
 
     def _fake_AltTextBatch(self, ctx: dict[str, Any], user: str) -> schemas.AltTextBatch:

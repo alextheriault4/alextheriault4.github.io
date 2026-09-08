@@ -5,9 +5,9 @@ from fastapi.testclient import TestClient
 from engine.dashboard.app import create_app
 from engine.db import Database
 from engine.deals.checkout import open_or_create_deal
+from tests.conftest import care_deal
 from engine.inbox.provider import ConsoleProvider
 from engine.llm import FakeLLM
-from engine.models import Package
 from engine.orchestrator import Orchestrator
 from engine.outreach.compose import compose_initial
 from engine.outreach.sequence import deliver_queued
@@ -25,7 +25,7 @@ def test_dashboard_pages_and_public_routes(bad_site, settings, browser):
     compose_initial(db, settings, FakeLLM(), lead_id)
     deliver_queued(db, settings, ConsoleProvider(settings.workdir), now=MONDAY_NOON_UTC)
     token = db.thread_for_lead(lead_id)[0]["thread_token"]
-    deal = open_or_create_deal(db, lead_id, Package.BUNDLE, settings.pricing.bundle_cents, "usd")
+    deal = care_deal(db, settings, lead_id)
 
     app = create_app(settings, db)
     c = TestClient(app, follow_redirects=False)
@@ -43,7 +43,9 @@ def test_dashboard_pages_and_public_routes(bad_site, settings, browser):
     # public pages need no auth
     anon = TestClient(app, follow_redirects=False)
     r = anon.get(f"/r/{token}")
-    assert r.status_code == 200 and "Estimates, not predictions" in r.text and "unsubscribe" in r.text
+    assert r.status_code == 200 and "These are estimates, not predictions" in r.text
+    assert "unsubscribe" in r.text and "not a statement that a website is legally" in r.text
+    assert "% " in r.text or "%<" in r.text        # the scores are shown as percentages
     assert anon.get(f"/agreement/{deal['id']}").status_code == 200
     assert anon.get(f"/pay/{deal['id']}").status_code == 200
     assert anon.get("/r/nope").status_code == 404

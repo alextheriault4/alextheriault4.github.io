@@ -12,10 +12,11 @@ import pytest
 from engine import autopilot, schemas
 from engine.db import Database
 from engine.deals.checkout import mark_paid, open_or_create_deal
+from engine import plans as plan_lib
+from tests.conftest import care_deal
 from engine.inbox.handle import process_inbound
 from engine.inbox.provider import ConsoleProvider
 from engine.llm import FakeLLM, LLMCapacityError, LLMRefusal
-from engine.models import Package
 from engine.outreach.compose import compose_initial
 from engine.outreach.sequence import deliver_queued
 from engine.scanning.runner import classify_after_scan, persist_scan, scan_site
@@ -154,7 +155,7 @@ def test_out_of_scope_request_is_declined_not_escalated(lead_ready, settings):
         def structured(self, **kw):
             if kw["schema"] is schemas.NegotiationReply:
                 return schemas.NegotiationReply(
-                    body_text="", package="bundle", proposed_price_cents=199000, ready_to_close=False,
+                    body_text="", package="care", proposed_price_cents=99000, proposed_monthly_cents=24900, ready_to_close=False,
                     escalate=True, escalate_reason="they want a full site redesign",
                 )
             return super().structured(**kw)
@@ -212,8 +213,7 @@ def test_undeliverable_work_queues_a_refund_but_does_not_take_it(lead_ready, set
     db.insert("messages", {"lead_id": lead_id, "thread_token": "tok9", "direction": "out", "kind": "initial",
                            "subject": "x", "body_text": "x", "to_addr": "a@b.c", "from_addr": "x@y.z",
                            "message_id": "<tok9.1@x>", "status": "sent", "created_at": "2026-01-01T00:00:00+00:00"})
-    deal = open_or_create_deal(db, lead_id, Package.BUNDLE, settings.pricing.bundle_cents, "usd")
-    mark_paid(db, settings, deal["id"], payment_intent="pi_x")
+    deal = care_deal(db, settings, lead_id)
 
     from engine.fixing import verify as verify_mod
 
@@ -227,7 +227,7 @@ def test_undeliverable_work_queues_a_refund_but_does_not_take_it(lead_ready, set
     assert not db.query("SELECT 1 FROM ledger WHERE kind='refund'")     # no money moved
     assert not db.query("SELECT 1 FROM messages WHERE kind='delivery'")  # customer not told yet
     waiting = autopilot.pending_refunds(db)
-    assert len(waiting) == 1 and waiting[0]["price_cents"] == settings.pricing.bundle_cents
+    assert len(waiting) == 1 and waiting[0]["price_cents"] == settings.pricing.care_setup_cents
     assert any(n["detail"].get("needs_you") for n in db.notices())
 
 
@@ -238,17 +238,16 @@ def test_approving_a_refund_moves_the_money_and_tells_the_customer(settings):
     db.insert("messages", {"lead_id": lead_id, "thread_token": "tk", "direction": "out", "kind": "initial",
                            "subject": "x", "body_text": "x", "to_addr": "owner@x.example", "from_addr": "y@z.c",
                            "message_id": "<tk.1@x>", "status": "sent", "created_at": "2026-01-01T00:00:00+00:00"})
-    deal = open_or_create_deal(db, lead_id, Package.ADA, 149000, "usd")
-    mark_paid(db, settings, deal["id"], payment_intent="pi_y")
+    deal = care_deal(db, settings, lead_id)
 
     autopilot.request_refund(db, settings, deal["id"], "never went live")
     assert db.one("SELECT status FROM deals WHERE id=?", (deal["id"],))["status"] == "refund_requested"
 
     out = autopilot.approve_refund(db, settings, deal["id"], approved_by="test")
-    assert out["refunded"] and out["amount_cents"] == 149000
+    assert out["refunded"] and out["amount_cents"] == settings.pricing.care_setup_cents
     assert db.get_lead(lead_id)["status"] == "refunded"
     refunds = db.query("SELECT * FROM ledger WHERE kind='refund'")
-    assert len(refunds) == 1 and refunds[0]["amount_cents"] == -149000
+    assert len(refunds) == 1 and refunds[0]["amount_cents"] == -settings.pricing.care_setup_cents
     note = db.one("SELECT * FROM messages WHERE kind='delivery' ORDER BY id DESC LIMIT 1")
     assert "refunded" in note["body_text"].lower()
     assert not autopilot.pending_refunds(db)
@@ -257,8 +256,7 @@ def test_approving_a_refund_moves_the_money_and_tells_the_customer(settings):
 def test_declining_a_refund_keeps_the_money_and_stops_asking(settings):
     db = Database(settings.database_path)
     lead_id, _ = db.upsert_lead(domain="x.example", url="https://x.example/", source="t")
-    deal = open_or_create_deal(db, lead_id, Package.ADA, 149000, "usd")
-    mark_paid(db, settings, deal["id"], payment_intent="pi_z")
+    deal = care_deal(db, settings, lead_id)
     autopilot.request_refund(db, settings, deal["id"], "never went live")
 
     autopilot.decline_refund(db, settings, deal["id"], "customer confirmed they are publishing next week")

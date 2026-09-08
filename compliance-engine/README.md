@@ -20,14 +20,18 @@ prospect ──► scan ──► draft ──► send ──► replies ──�
 | Stage | Module | What it does |
 |---|---|---|
 | Prospect | `engine/prospecting` | Leads from a CSV, OpenStreetMap (free), or Google Places (key). Drops chains and aggregators. Finds a contact email and detects the platform (WordPress, Wix, Squarespace...). |
-| Scan | `engine/scanning` | Headless Chromium + axe-core (WCAG 2.1/2.2 AA) plus manual checks (skip link, focus styles, generic links, autoplay). AI-search audit: robots.txt and AI-crawler blocks, sitemap, llms.txt, JSON-LD LocalBusiness/FAQ, title/description, H1, canonical, OG, HTTPS, viewport, thin or JS-only content, phone/address in text, load time. Two 0-100 scores. |
+| Checklist | `engine/standards` | **80 checks** — 46 accessibility (WCAG 2.2 A/AA) and 34 search/AI — each with a weight, how it's detected, why it matters, how to fix it, and whether we can fix it automatically. One registry drives the scanner, the scores, the fixer and the report. Published as [STANDARDS.md](STANDARDS.md), generated from the code so it can't drift. |
+| Scan | `engine/scanning` | Headless Chromium runs axe-core and maps **all four** of its outcomes (violation / pass / incomplete / inapplicable) onto the checklist, plus our own probes for things axe leaves alone. Search side covers crawler access, structured data, metadata, content depth, Core Web Vitals (real LCP and CLS measurement) and AI readiness. |
+| Score | `engine/standards/scoring.py` | Earned weight ÷ applicable weight, per area and per category. Checks that don't apply are excluded; manual and undecidable checks are reported but never scored. |
 | Exposure | `engine/exposure.py` + `engine/data/assumptions.json` | Sourced dollar ranges (settlement ranges, defense fees, Unruh, state multipliers; traffic × AI share × conversion × ticket). The email may quote **only** these numbers. |
 | Draft | `engine/outreach/compose.py` | Claude writes five short paragraphs from the scan; code adds greeting, signature, the CAN-SPAM footer, sources, report link, unsubscribe link. |
 | Lint | `engine/outreach/compliance.py` | Rejects guarantees, "certified", urgency, legal-notice language, deceptive subjects, any dollar figure the exposure model didn't produce, missing address/unsubscribe/legal name. Failed drafts go to "needs human", never out. |
 | Send | `engine/outreach/sequence.py` | Weekday business-hours window in your timezone, daily cap, suppression list, two follow-ups (day 3, day 7), bounce/complaint circuit breaker, pause switch. |
 | Inbox | `engine/inbox` | Threads matched by `reply+<token>@` address or Message-ID. Claude classifies intent; code acts: unsubscribe and bounces suppress instantly, "not interested" is honoured permanently, redirects re-target the new person, questions/objections go to the negotiation agent, anything hostile or unclear escalates to you. |
 | Negotiate | `engine/inbox/negotiate.py` | Claude writes the reply inside a fixed policy: list prices, max discount, hard floor; the code clamps the price and never closes a deal without an explicit "yes". |
-| Checkout | `engine/deals/checkout.py` | Stripe Checkout with Stripe Tax (sales tax calculated and collected per jurisdiction) and invoice creation; webhook marks the deal paid and writes the ledger. Placeholder link + "simulate payment" until Stripe is live. |
+| Plans | `engine/plans.py` | **Retainer first**: a setup fee to fix it, then a monthly fee to keep it fixed. A one-off is also offered, priced higher. See "Why a retainer" below. |
+| Checkout | `engine/deals/checkout.py` | Stripe Checkout with Stripe Tax, in subscription mode for care plans (setup line + recurring line on one page) or payment mode for the one-off. Webhooks handle the first payment, each monthly invoice, cancellation and refunds. Placeholder link + "simulate payment" until Stripe is live. |
+| Care | `engine/care.py` | The monthly retainer, delivered automatically: rescan, diff against last month to find regressions and new pages, fix what's auto-fixable, email a short report. A quiet month still gets a report, because "nothing regressed" is what they're paying to hear. |
 | Fix | `engine/fixing` | Deterministic HTML patches keyed to findings (alt text, labels, names, lang, title, meta, OG, canonical, JSON-LD, FAQ schema, landmarks, skip link, heading levels, frame titles, focus styles, contrast overrides, tap targets), plus robots.txt (AI crawlers unblocked), sitemap.xml, llms.txt. Applied via WordPress REST + generated mu-plugin, a GitHub pull request, or delivered as a bundle with per-platform instructions and a "needs your input" list. |
 | Verify | `engine/fixing/verify.py` | Rescans every 3 days for 45 days; "resolved" means a +15 jump, at least 70, and nothing critical left in the paid area. Sends the before/after report; otherwise escalates. |
 | Finance | `engine/finance/ledger.py` | Charges, refunds, estimated fees, tax collected, monthly P&L, taxable sales by client state (nexus watch), CSV export for your accountant. |
@@ -35,6 +39,53 @@ prospect ──► scan ──► draft ──► send ──► replies ──�
 | Risk controls | `engine/legal.py` | Who may be contacted, how politely we crawl, what we're allowed to claim, and how client credentials are held. |
 | Dashboard | `engine/dashboard` | Funnel and KPIs, gates and autonomy switches, notices, "needs a human" queue, held messages with approve/discard, lead timeline and full thread, deal and fix status, finance, pause / resume / breaker reset. Public pages: report, one-click unsubscribe, service agreement, pay, bundle download, crawler info, privacy, terms, self-serve data erasure, Stripe webhook. |
 | Orchestrator | `engine/orchestrator.py` | One `tick` runs every stage in order with per-lead error isolation; `run` loops forever; heartbeat on the dashboard; retention housekeeping. |
+
+## The checklist and the scores
+
+Everything checked is one declarative registry in `engine/standards/checks.py`, published
+as **[STANDARDS.md](STANDARDS.md)** — 80 checks with weight, detection method, why it
+matters and how to fix it. That document is *generated from the code*, and a test fails if
+they diverge, so it always describes what actually runs. It doubles as a build standard for
+sites you make yourself; `tests/fixtures/sites/good_site/` is a worked example that scores
+100/100.
+
+Scores are a real fraction, not a penalty tally:
+
+```
+score = weight of checks that PASSED ÷ weight of checks that PASSED or FAILED
+```
+
+Three rules keep the number honest, and they matter because a dishonest score is exactly
+what the FTC went after in this industry:
+
+- **Checks that don't apply are excluded.** No video, no captions check, no penalty.
+- **Checks needing a person are never scored.** Automated tools catch roughly a third to a
+  half of real accessibility problems; the rest are listed as "needs a person to check" and
+  left out of the maths rather than guessed at.
+- **Checks the tools couldn't decide are excluded too.** axe's "incomplete" means exactly
+  that.
+
+So a percentage means *automated conformance against the checks that apply to this site*.
+It is not a statement of legal compliance, and the report says so in as many words.
+
+## Why a retainer is the main offer
+
+The default plan is **$990 to fix it, then $249/month to keep it fixed** (all configurable).
+A one-off remediation is still available at $1,790 — priced higher, because without the
+recurring relationship it has to carry its own acquisition cost.
+
+Three reasons the retainer leads, in `engine/plans.py`:
+
+1. **Accessibility doesn't stay fixed.** The client adds a page, uploads an image with no
+   alt text, or their theme updates. A one-off sells them a snapshot, not a state.
+2. **The verification promise is already ongoing work.** Rescanning, re-reporting and
+   fixing regressions is a service; charge for it as one.
+3. **One-off revenue makes the business fragile.** Every month restarts at zero. Recurring
+   revenue compounds and makes each acquired client worth far more.
+
+The monthly fee is genuinely serviced, automatically: each month the engine rescans, diffs
+against the previous cycle, fixes what regressed, and sends a short report. Cancellation is
+one click from any receipt, and the agreement says so.
 
 ## Which model account it spends
 
@@ -233,8 +284,10 @@ See `.env.example` for the full list. Notable ones:
 |---|---|---|
 | `CE_MODE` | `dry_run` | `live` is required for any external side effect |
 | `CE_AUTONOMY__AUTO_SEND_OUTREACH` / `AUTO_REPLY` / `AUTO_SEND_CHECKOUT` / `AUTO_APPLY_FIXES` | `false` | per-stage autonomy; off = held for approval |
-| `CE_PRICING__ADA_CENTS` / `AISEO_CENTS` / `BUNDLE_CENTS` | 1490 / 990 / 1990 USD | list prices |
-| `CE_PRICING__FLOOR_CENTS`, `MAX_DISCOUNT_PCT` | 990, 20 | the negotiation agent can't go below `max(floor, list × (1-discount))` |
+| `CE_PRICING__CARE_SETUP_CENTS` / `CARE_MONTHLY_CENTS` | $990 / $249 | the recommended plan |
+| `CE_PRICING__FIX_ONLY_CENTS` | $1,790 | one-off, no ongoing cover |
+| `CE_PRICING__FLOOR_SETUP_CENTS` / `FLOOR_MONTHLY_CENTS`, `MAX_DISCOUNT_PCT` | $590 / $149, 20 | the negotiation agent can never go below these |
+| `CE_PRICING__CLEAN_ADA_PERCENT` / `CLEAN_SEO_PERCENT` | 92 / 88 | a site scoring above both is left alone, not pitched |
 | `CE_OUTREACH__DAILY_SEND_CAP`, `FOLLOWUP_DAYS`, send window, timezone | 40, [3,7], 9-17, America/New_York | cadence |
 | `CE_LLM__MODEL`, `EFFORT` | `claude-opus-5`, `medium` | model and effort for drafting/negotiation (classification runs at `low`) |
 | `CE_SCANNING__MAX_PAGES_PER_SITE` | 4 | home + 3 priority pages (contact/about/services...) |
@@ -252,16 +305,24 @@ compliance-engine/
     config.py  db.py  models.py  schemas.py  llm.py  exposure.py  orchestrator.py  cli.py
     autopilot.py                 what happens instead of asking you
     legal.py                     who may be contacted, crawl etiquette, credential encryption
+    plans.py                     the retainer and one-off plans, and the pricing floors
+    care.py                      the automated monthly retainer cycle
+    standards/checks.py          THE CHECKLIST - 80 checks, the source of truth
+    standards/scoring.py         earned weight over applicable weight
     data/assumptions.json        sourced numbers the emails may use
     prospecting/  scanning/  outreach/  inbox/  deals/  fixing/  finance/  dashboard/
     vendor/axe.min.js            axe-core 4.10 (MPL-2.0)
   tests/                         fixture sites + end-to-end dry-run tests
+    fixtures/sites/good_site/    a reference site that scores 100/100 on the checklist
+  tools/generate_standards.py    writes STANDARDS.md from the registry
+  STANDARDS.md                   the checklist, generated
   examples/leads.csv  deploy/*.service  .env.example
 ```
 
 ## Extending
 
 - New lead source: implement `search(category, city, region, limit)` yielding `Prospect` in `engine/prospecting/sources.py`.
-- New check: append a `Finding` in `engine/scanning/ada.py` or `aiseo.py`, add a plain-English line to `PLAIN`, and (if fixable) a transform in `engine/fixing/patches.py` keyed to the same `rule_id`.
+- **New check**: add a `Check` to `engine/standards/checks.py` (that alone puts it in the scanner, the scores, the report and STANDARDS.md), then either map it to axe rules or add a probe in `engine/scanning/ada.py` / `aiseo.py`. If it is auto-fixable, add a transform in `engine/fixing/patches.py` and map it in `CHECK_FOR_CHANGE`. Run `python tools/generate_standards.py`.
+- **New plan**: add it to `catalogue()` in `engine/plans.py`; checkout, the agreement and the negotiation floors pick it up.
 - New apply channel: add a strategy in `engine/fixing/apply.py` and a branch in `choose_strategy`.
 - Different mailbox: implement `send()` / `fetch_inbound()` in `engine/inbox/provider.py`.

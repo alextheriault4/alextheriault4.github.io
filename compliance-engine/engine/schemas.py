@@ -35,8 +35,13 @@ class ReplyClassification(BaseModel):
 
 class NegotiationReply(BaseModel):
     body_text: str = Field(description="The reply body only. No signature, no footer; the system appends those.")
-    package: Literal["ada", "aiseo", "bundle"]
-    proposed_price_cents: int = Field(description="Price we are now offering, in cents. Must respect the floor given.")
+    package: Literal["care", "care_ada", "care_seo", "fix_only"] = Field(
+        description="Which plan we are now offering. Prefer a care plan; fix_only only if they refuse anything recurring.")
+    proposed_price_cents: int = Field(
+        description="Up-front setup price in cents (0 if the plan has none). Must respect min_setup_cents.")
+    proposed_monthly_cents: int | None = Field(
+        default=None,
+        description="Monthly price in cents for a care plan, or 0 for a one-off. Must respect min_monthly_cents.")
     ready_to_close: bool = Field(description="True only if the sender has clearly agreed to buy at a stated price.")
     escalate: bool = Field(default=False, description="True if a human must step in (legal threat, custom scope, anger, anything outside policy).")
     escalate_reason: str | None = None

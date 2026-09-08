@@ -4,11 +4,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import autopilot, schemas
+from .. import autopilot, plans, schemas
 from ..config import Settings
 from ..db import Database, utcnow
 from ..llm import LLM, LLMCapacityError, LLMError, LLMRefusal
-from ..models import DealStatus, LeadStatus, MessageStatus, Package
+from ..models import DealStatus, LeadStatus, MessageStatus
 from ..outreach.compliance import lint_email
 from ..outreach.compose import allowed_figures, build_context, compose_initial, to_html
 from ..deals.checkout import create_checkout, open_or_create_deal, queue_checkout_email
@@ -202,9 +202,12 @@ def handle_one(db: Database, settings: Settings, llm: LLM, mail: InboundEmail) -
         autopilot.resolve(db, settings, lead["id"], "out_of_scope", reply.escalate_reason or cls.summary,
                           f"Told {lead['domain']} we only sell the standard packages")
         return intent
-    package = Package(reply.package)
-    deal = open_or_create_deal(db, lead["id"], package, reply.proposed_price_cents, settings.pricing.currency)
-    _queue_reply(db, settings, lead, scan, token, mail, reply.body_text, [reply.proposed_price_cents])
+    plan = plans.get(settings, reply.package)
+    monthly = int(reply.proposed_monthly_cents or 0)
+    deal = open_or_create_deal(db, lead["id"], plan, reply.proposed_price_cents, monthly,
+                               settings.pricing.currency)
+    _queue_reply(db, settings, lead, scan, token, mail, reply.body_text,
+                 [reply.proposed_price_cents, monthly])
     if reply.ready_to_close and intent == "accept":
         db.update("deals", deal["id"], status=DealStatus.ACCEPTED)
         db.log_event("deal_accepted", lead["id"], deal_id=deal["id"], price_cents=reply.proposed_price_cents)

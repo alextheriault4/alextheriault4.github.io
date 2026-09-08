@@ -1,11 +1,14 @@
-"""Scan one site: crawl a handful of pages, run both audits, compute scores and exposure,
-snapshot HTML for the fixer, and persist everything."""
+"""Scan one site against the checklist.
+
+Crawls politely, runs both detectors on each page, merges the per-page results into one
+result per check, scores them, computes exposure, snapshots the HTML for the fixer, and
+persists everything.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,8 +22,9 @@ from ..exposure import compute_exposure
 from ..legal import CrawlPolicy, check_lead, safe_to_fetch
 from ..models import LeadStatus
 from ..prospecting.discover import discover
-from .ada import Finding, ada_score, run_axe
-from .aiseo import aiseo_score, audit_home
+from ..standards import CheckResult, Scorecard, headline, score
+from .ada import PageAudit, merge_audits, run_axe
+from .aiseo import audit_page, measure_web_vitals, parse_robots
 
 PRIORITY_PATHS = ("contact", "about", "services", "menu", "team", "locations", "faq")
 
@@ -41,10 +45,10 @@ class ScanResult:
     url: str
     domain: str
     pages: list[PageSnapshot]
-    findings: list[Finding]
-    ada_score: int
-    aiseo_score: int
-    aiseo_facts: dict[str, Any]
+    results: list[CheckResult]
+    ada: Scorecard | None
+    seo: Scorecard | None
+    facts: dict[str, Any]
     robots_txt: str | None
     contact_email: str | None
     contact_source: str | None
@@ -53,28 +57,37 @@ class ScanResult:
     error: str | None = None
 
     @property
+    def ada_score(self) -> int:
+        return self.ada.percent if self.ada else 0
+
+    @property
+    def aiseo_score(self) -> int:
+        return self.seo.percent if self.seo else 0
+
+    @property
     def critical_count(self) -> int:
-        return sum(1 for f in self.findings if f.impact == "critical")
+        return len(self.ada.critical_failures) + len(self.seo.critical_failures) if self.ada and self.seo else 0
 
     def top_issues(self, n: int = 5) -> list[dict[str, Any]]:
-        order = {"critical": 0, "serious": 1, "moderate": 2, "minor": 3}
-        seen: set[str] = set()
+        """The failures worth naming in an email: heaviest first, and things we can fix."""
+        rows = (self.ada.failures if self.ada else []) + (self.seo.failures if self.seo else [])
+        rows.sort(key=lambda r: (-r.check.weight, not r.check.auto_fixable))
         out = []
-        for f in sorted(self.findings, key=lambda f: (order.get(f.impact, 9), -f.count)):
-            if f.rule_id in seen:
-                continue
-            seen.add(f.rule_id)
-            out.append({"kind": f.kind, "rule_id": f.rule_id, "impact": f.impact, "plain": f.plain, "count": f.count})
-            if len(out) >= n:
-                break
+        for r in rows[:n]:
+            detail = (r.detail or "").strip().rstrip(".")
+            out.append({
+                "kind": r.check.area, "rule_id": r.check_id, "title": r.check.title,
+                "impact": "critical" if r.check.weight >= 9 else "serious" if r.check.weight >= 6 else "moderate",
+                "plain": r.check.failure_phrase,
+                "detail": detail, "count": r.count, "auto_fixable": r.check.auto_fixable,
+            })
         return out
 
 
 def _same_site(base: str, href: str) -> bool:
     b, h = urlparse(base), urlparse(href)
-    hb = (b.hostname or "").removeprefix("www.")
-    hh = (h.hostname or "").removeprefix("www.")
-    return hb == hh and h.scheme in ("http", "https")
+    return (b.hostname or "").removeprefix("www.") == (h.hostname or "").removeprefix("www.") \
+        and h.scheme in ("http", "https")
 
 
 def pick_internal_links(home_url: str, html: str, limit: int) -> list[str]:
@@ -84,7 +97,7 @@ def pick_internal_links(home_url: str, html: str, limit: int) -> list[str]:
         full = urljoin(home_url, h.strip())
         if not _same_site(home_url, full) or full.rstrip("/") == home_url.rstrip("/"):
             continue
-        if re.search(r"\.(pdf|jpg|jpeg|png|gif|svg|zip|mp4|webp|css|js)$", full, re.I):
+        if re.search(r"\.(pdf|jpe?g|png|gif|svg|zip|mp4|webp|css|js)$", full, re.I):
             continue
         if re.search(r"(login|logout|cart|checkout|account|wp-admin|feed|tag/|category/|\.xml)", full, re.I):
             continue
@@ -95,23 +108,25 @@ def pick_internal_links(home_url: str, html: str, limit: int) -> list[str]:
 
 
 def _fetch_text(context: Any, url: str, timeout_ms: int) -> tuple[bool, str | None]:
+    """Fetch a plain-text site file, rejecting the HTML error pages many hosts return instead."""
     try:
         r = context.request.get(url, timeout=timeout_ms, max_redirects=3)
-        if r.ok:
-            ctype = (r.headers.get("content-type") or "").lower()
-            body = r.text()
-            if "html" in ctype and not url.endswith(".xml"):
-                # servers that return a 200 HTML page for everything
-                return False, None
-            return True, body
-        return False, None
+        if not r.ok:
+            return False, None
+        body = r.text()
+        ctype = (r.headers.get("content-type") or "").lower()
+        if "html" in ctype or body.lstrip().lower().startswith(("<!doctype", "<html")):
+            # Some hosts serve robots.txt as text/html; accept it if it looks like the real thing.
+            if url.endswith("robots.txt") and re.search(r"^\s*(user-agent|sitemap)\s*:", body, re.I | re.M):
+                return True, body
+            return False, None
+        return True, body
     except PlaywrightError:
         return False, None
 
 
 def scan_site(url: str, settings: Settings, browser: Browser) -> ScanResult:
-    """Read a site the way a polite crawler does: identify ourselves, ask robots.txt
-    first, wait between requests, and only ever GET public pages."""
+    """Read a site the way a polite crawler does, and score it against the checklist."""
     domain = (urlparse(url).hostname or "").removeprefix("www.")
     agent = settings.scanning.user_agent_for(settings.company.website, settings.legal.bot_info_path)
     context = browser.new_context(user_agent=agent, ignore_https_errors=True,
@@ -119,62 +134,103 @@ def scan_site(url: str, settings: Settings, browser: Browser) -> ScanResult:
     context.set_default_timeout(settings.scanning.page_timeout_ms)
     policy = CrawlPolicy(settings)
     pages: list[PageSnapshot] = []
-    findings: list[Finding] = []
+    audits: list[PageAudit] = []
+    results: list[CheckResult] = []
+
+    def failed(reason: str, robots_txt: str | None = None) -> ScanResult:
+        return ScanResult(url, domain, [], [], None, None, {}, robots_txt, None, None, "unknown", [], error=reason)
+
     try:
         origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
         robots_ok, robots_txt = _fetch_text(context, origin + "/robots.txt", settings.scanning.page_timeout_ms)
         policy.load_robots(origin, robots_txt if robots_ok else None)
         if not policy.allowed(url):
-            return ScanResult(url, domain, [], [], 0, 0, {}, robots_txt if robots_ok else None, None, None,
-                              "unknown", [], error="robots.txt disallows this crawler; site skipped")
+            return failed("robots.txt disallows this crawler; site skipped", robots_txt if robots_ok else None)
 
         page = context.new_page()
         policy.wait(url)
         home = _load(page, url, settings.scanning.page_timeout_ms)
         if home is None:
-            return ScanResult(url, domain, [], [], 0, 0, {}, robots_txt if robots_ok else None, None, None,
-                              "unknown", [], error="home page failed to load")
+            return failed("home page failed to load", robots_txt if robots_ok else None)
+        vitals = measure_web_vitals(page)
         pages.append(home)
-        findings += run_axe(page, home.url)
+        audits.append(run_axe(page, home.url))
 
-        # The landing URL may have redirected to a different host; re-anchor on where we are.
-        origin = f"{urlparse(home.url).scheme}://{urlparse(home.url).netloc}"
-        if origin not in (f"{urlparse(url).scheme}://{urlparse(url).netloc}",):
+        origin_now = f"{urlparse(home.url).scheme}://{urlparse(home.url).netloc}"
+        if origin_now != origin:  # redirected to another host; re-ask that host's robots.txt
+            origin = origin_now
             robots_ok, robots_txt = _fetch_text(context, origin + "/robots.txt", settings.scanning.page_timeout_ms)
             policy.load_robots(origin, robots_txt if robots_ok else None)
+        robots = parse_robots(robots_txt if robots_ok else None)
         sitemap_ok, _ = _fetch_text(context, origin + "/sitemap.xml", settings.scanning.page_timeout_ms)
         if not sitemap_ok:
             sitemap_ok, _ = _fetch_text(context, origin + "/sitemap_index.xml", settings.scanning.page_timeout_ms)
         llms_ok, _ = _fetch_text(context, origin + "/llms.txt", settings.scanning.page_timeout_ms)
 
-        seo_findings, facts = audit_home(
-            url=home.url, raw_html=home.raw_html, rendered_html=home.rendered_html,
-            robots_txt=robots_txt if robots_ok else None, sitemap_ok=sitemap_ok, llms_txt_ok=llms_ok, load_ms=home.load_ms,
+        links = pick_internal_links(home.url, home.rendered_html, settings.scanning.max_pages_per_site - 1)
+        seo_results, facts = audit_page(
+            url=home.url, raw_html=home.raw_html, rendered_html=home.rendered_html, is_home=True,
+            robots=robots, sitemap_ok=sitemap_ok, llms_txt_ok=llms_ok, vitals=vitals,
+            status_code=home.status, internal_link_count=len(links),
         )
-        findings += seo_findings
+        results += seo_results
 
-        for link in pick_internal_links(home.url, home.rendered_html, settings.scanning.max_pages_per_site - 1):
+        broken = 0
+        for link in links:
             if not safe_to_fetch(link) or not policy.allowed(link):
                 continue
             policy.wait(link)
             snap = _load(page, link, settings.scanning.page_timeout_ms)
             if snap is None:
+                broken += 1
                 continue
             pages.append(snap)
-            findings += run_axe(page, snap.url)
+            audits.append(run_axe(page, snap.url))
+            sub_results, _ = audit_page(
+                url=snap.url, raw_html=snap.raw_html, rendered_html=snap.rendered_html, is_home=False,
+                robots=robots, sitemap_ok=sitemap_ok, llms_txt_ok=llms_ok,
+                vitals=measure_web_vitals(page), status_code=snap.status,
+            )
+            results += sub_results
+        results.append(CheckResult("broken-links", "pass" if broken == 0 else "fail", count=broken,
+                                   detail=f"{broken} internal link(s) failed to load" if broken else "",
+                                   pages=[home.url]))
 
+        results += merge_audits(audits)
+        results = _dedupe(results)
+        ada_card, seo_card = score(results, "ada"), score(results, "seo")
         disc = discover([(p.url, p.rendered_html) for p in pages], domain, home.headers)
         return ScanResult(
-            url=home.url, domain=domain, pages=pages, findings=findings,
-            ada_score=ada_score(findings), aiseo_score=aiseo_score(findings), aiseo_facts=facts,
-            robots_txt=robots_txt if robots_ok else None, contact_email=disc.email, contact_source=disc.email_source,
-            platform=disc.platform, all_emails=disc.all_emails,
+            url=home.url, domain=domain, pages=pages, results=results, ada=ada_card, seo=seo_card, facts=facts,
+            robots_txt=robots_txt if robots_ok else None, contact_email=disc.email,
+            contact_source=disc.email_source, platform=disc.platform, all_emails=disc.all_emails,
         )
     finally:
         context.close()
 
 
+def _dedupe(results: list[CheckResult]) -> list[CheckResult]:
+    """One result per check; the worst status across pages wins."""
+    rank = {"fail": 3, "needs_review": 2, "pass": 1, "not_applicable": 0}
+    best: dict[str, CheckResult] = {}
+    for r in results:
+        cur = best.get(r.check_id)
+        if cur is None:
+            best[r.check_id] = r
+        elif rank[r.status] > rank[cur.status]:
+            r.pages = list(dict.fromkeys(cur.pages + r.pages))
+            best[r.check_id] = r
+        elif r.status == cur.status:
+            cur.count += r.count
+            cur.pages = list(dict.fromkeys(cur.pages + r.pages))
+            cur.evidence.extend(r.evidence)
+            cur.detail = cur.detail or r.detail
+    return list(best.values())
+
+
 def _load(page: Any, url: str, timeout_ms: int) -> PageSnapshot | None:
+    import time
+
     t0 = time.monotonic()
     try:
         resp = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
@@ -185,9 +241,7 @@ def _load(page: Any, url: str, timeout_ms: int) -> PageSnapshot | None:
     except PlaywrightError:
         return None
     load_ms = int((time.monotonic() - t0) * 1000)
-    raw_html = ""
-    headers: dict[str, str] = {}
-    status = None
+    raw_html, headers, status = "", {}, None
     if resp is not None:
         status = resp.status
         headers = {k.lower(): v for k, v in resp.headers.items()}
@@ -197,8 +251,7 @@ def _load(page: Any, url: str, timeout_ms: int) -> PageSnapshot | None:
             raw_html = ""
     if status is not None and status >= 400:
         return None
-    rendered = page.content()
-    return PageSnapshot(url=page.url, status=status, raw_html=raw_html, rendered_html=rendered,
+    return PageSnapshot(url=page.url, status=status, raw_html=raw_html, rendered_html=page.content(),
                         title=page.title(), load_ms=load_ms, headers=headers)
 
 
@@ -212,15 +265,18 @@ def snapshot_dir(settings: Settings, domain: str) -> Path:
     return d
 
 
-def persist_scan(db: Database, settings: Settings, lead: dict[str, Any], result: ScanResult, kind: str = "baseline") -> int:
+def persist_scan(db: Database, settings: Settings, lead: dict[str, Any], result: ScanResult,
+                 kind: str = "baseline") -> int:
     if result.error:
-        scan_id = db.insert("scans", {"lead_id": lead["id"], "kind": kind, "status": "failed", "error": result.error,
-                                      "created_at": utcnow()})
+        scan_id = db.insert("scans", {"lead_id": lead["id"], "kind": kind, "status": "failed",
+                                      "error": result.error, "created_at": utcnow()})
         db.log_event("scan_failed", lead["id"], error=result.error)
         return scan_id
 
-    exposure = compute_exposure(ada_score=result.ada_score, aiseo_score=result.aiseo_score, region=lead.get("region"),
-                                category=lead.get("category"), critical_count=result.critical_count)
+    assert result.ada and result.seo
+    exposure = compute_exposure(ada_score=result.ada.percent, aiseo_score=result.seo.percent,
+                                region=lead.get("region"), category=lead.get("category"),
+                                critical_count=result.critical_count)
     snap_dir = snapshot_dir(settings, lead["domain"])
     page_index = []
     for p in result.pages:
@@ -231,37 +287,39 @@ def persist_scan(db: Database, settings: Settings, lead: dict[str, Any], result:
     if result.robots_txt is not None:
         (snap_dir / "robots.txt").write_text(result.robots_txt, encoding="utf-8")
 
-    ada_summary = {"score": result.ada_score, "by_impact": _by_impact(result.findings, "ada"),
-                   "top": [i for i in result.top_issues(8) if i["kind"] == "ada"]}
-    aiseo_summary = {"score": result.aiseo_score, "by_impact": _by_impact(result.findings, "aiseo"),
-                     "facts": result.aiseo_facts, "top": [i for i in result.top_issues(12) if i["kind"] == "aiseo"]}
+    ada_summary = {**result.ada.as_dict(), "score": result.ada.percent}
+    seo_summary = {**result.seo.as_dict(), "score": result.seo.percent, "facts": result.facts}
     scan_id = db.insert("scans", {
-        "lead_id": lead["id"], "kind": kind, "status": "ok", "ada_score": result.ada_score, "aiseo_score": result.aiseo_score,
-        "ada_summary": ada_summary, "aiseo_summary": aiseo_summary, "pages": page_index, "exposure": exposure,
-        "created_at": utcnow(),
+        "lead_id": lead["id"], "kind": kind, "status": "ok",
+        "ada_score": result.ada.percent, "aiseo_score": result.seo.percent,
+        "ada_summary": ada_summary, "aiseo_summary": seo_summary,
+        "pages": page_index, "exposure": exposure, "created_at": utcnow(),
     })
-    for f in result.findings:
-        db.insert("findings", f.as_row(scan_id))
+    for r in result.results:
+        c = r.check
+        db.insert("findings", {
+            "scan_id": scan_id, "kind": c.area, "rule_id": r.check_id,
+            "impact": "critical" if c.weight >= 9 else "serious" if c.weight >= 6 else
+                      "moderate" if c.weight >= 4 else "minor",
+            "description": c.title, "help_url": None,
+            "page_url": (r.pages or [result.url])[0], "count": r.count,
+            "sample": {"status": r.status, "detail": r.detail, "weight": c.weight,
+                       "standard": c.standard, "auto_fixable": c.auto_fixable,
+                       "evidence": r.evidence[:3]},
+        })
 
-    updates: dict[str, Any] = {"platform": result.platform}
     if kind == "baseline":
+        updates: dict[str, Any] = {"platform": result.platform}
         if result.contact_email and not lead.get("contact_email"):
             updates["contact_email"] = result.contact_email
             updates["contact_source"] = result.contact_source
         if not lead.get("business_name") and result.pages:
-            updates["business_name"] = _guess_name(result.pages[0].title, result.domain)
+            updates["business_name"] = _guess_name(result.pages[0].title, lead["domain"])
         db.update("leads", lead["id"], **updates)
-    db.log_event("scan_done", lead["id"], scan_id=scan_id, ada=result.ada_score, aiseo=result.aiseo_score,
-                 pages=len(result.pages), scan_kind=kind)
+    db.log_event("scan_done", lead["id"], scan_id=scan_id, ada=result.ada.percent,
+                 aiseo=result.seo.percent, pages=len(result.pages), scan_kind=kind,
+                 **headline(result.ada, result.seo))
     return scan_id
-
-
-def _by_impact(findings: list[Finding], kind: str) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for f in findings:
-        if f.kind == kind:
-            out[f.impact] = out.get(f.impact, 0) + 1
-    return out
 
 
 def _guess_name(title: str, domain: str) -> str:
@@ -280,14 +338,13 @@ def classify_after_scan(db: Database, settings: Settings, lead_id: int, scan_id:
     if scan["status"] != "ok":
         db.set_lead_status(lead_id, LeadStatus.ARCHIVED, "scan failed")
         return LeadStatus.ARCHIVED
-    # Contact policy comes before everything: a business we may not email is not a lead,
-    # however bad its website is.
     eligible = check_lead(lead, settings, page_text)
     if not eligible.ok:
         db.set_lead_status(lead_id, LeadStatus.EXCLUDED, eligible.reason)
         db.log_event("excluded", lead_id, reason=eligible.reason)
         return LeadStatus.EXCLUDED
-    if (scan["ada_score"] or 0) >= 90 and (scan["aiseo_score"] or 0) >= 85:
+    if (scan["ada_score"] or 0) >= settings.pricing.clean_ada_percent and \
+       (scan["aiseo_score"] or 0) >= settings.pricing.clean_seo_percent:
         db.set_lead_status(lead_id, LeadStatus.CLEAN)
         return LeadStatus.CLEAN
     if not lead.get("contact_email"):

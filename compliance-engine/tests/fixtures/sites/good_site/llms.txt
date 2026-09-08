@@ -1,2 +1,20 @@
 # Riverside Plumbing
-> Licensed plumber in Springfield, IL.
+
+> Family-owned licensed plumbing company in Springfield, Illinois, serving Sangamon County since 2004. Emergency service 24 hours a day.
+
+## Services
+- Drain cleaning and hydro jetting
+- Water heater repair and replacement
+- Leak detection and pipe repair
+- Sump pumps and battery backup
+- Remodel plumbing
+
+## Contact
+- Phone: (217) 555-0142
+- Address: 48 River Rd, Springfield, IL 62701
+- Hours: Mon-Fri 7am-6pm, Sat 8am-2pm, emergencies 24/7
+
+## Pages
+- [Home](https://riversideplumbing.example/)
+- [Contact](https://riversideplumbing.example/contact.html)
+- [Accessibility statement](https://riversideplumbing.example/accessibility.html)

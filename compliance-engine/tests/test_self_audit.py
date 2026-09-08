@@ -11,10 +11,11 @@ from fastapi.testclient import TestClient
 from engine.dashboard.app import create_app
 from engine.db import Database
 from engine.deals.checkout import open_or_create_deal
+from tests.conftest import care_deal
 from engine.llm import FakeLLM
-from engine.models import Package
 from engine.outreach.compose import compose_initial
-from engine.scanning.ada import ada_score, run_axe
+from engine.scanning.ada import merge_audits, run_axe
+from engine.standards import score
 from engine.scanning.runner import classify_after_scan, persist_scan, scan_site
 from tests.conftest import SiteServer
 
@@ -31,7 +32,7 @@ def test_our_public_pages_are_accessible(bad_site, settings, browser, tmp_path):
     classify_after_scan(db, settings, lead_id, scan_id)
     compose_initial(db, settings, FakeLLM(), lead_id)
     token = db.thread_for_lead(lead_id)[0]["thread_token"]
-    deal = open_or_create_deal(db, lead_id, Package.BUNDLE, settings.pricing.bundle_cents, "usd")
+    deal = care_deal(db, settings, lead_id)
 
     client = TestClient(create_app(settings, db))
     site = tmp_path / "ourpages"
@@ -47,10 +48,12 @@ def test_our_public_pages_are_accessible(bad_site, settings, browser, tmp_path):
         page = browser.new_page()
         for html_file in sorted(site.glob("*.html")):
             page.goto(f"http://127.0.0.1:{server.port}/{html_file.name}")
-            findings = run_axe(page, html_file.name)
-            blocking = [f for f in findings if f.impact in ("critical", "serious")]
-            assert not blocking, f"{html_file.name}: " + "; ".join(f"{f.rule_id} ({f.impact})" for f in blocking)
-            assert ada_score(findings) >= 90, f"{html_file.name} scored {ada_score(findings)}"
+            card = score(merge_audits([run_axe(page, html_file.name)]), "ada")
+            blocking = [f for f in card.failures if f.check.weight >= 8]
+            assert not blocking, f"{html_file.name}: " + "; ".join(
+                f"{f.check_id} (weight {f.check.weight})" for f in blocking)
+            assert card.percent >= 90, (f"{html_file.name} scored {card.percent}%: "
+                                        + ", ".join(f.check_id for f in card.failures))
         page.close()
     finally:
         server.stop()
@@ -78,7 +81,7 @@ def test_public_pages_say_the_things_that_keep_us_honest(settings):
 def test_the_agreement_carries_the_clauses_that_cap_exposure(settings):
     db = Database(settings.database_path)
     lead_id, _ = db.upsert_lead(domain="x.example", url="https://x.example/", source="t")
-    deal = open_or_create_deal(db, lead_id, Package.ADA, 149000, "usd")
+    deal = care_deal(db, settings, lead_id)
     text = TestClient(create_app(settings, db)).get(f"/agreement/{deal['id']}").text.lower()
 
     for clause in (

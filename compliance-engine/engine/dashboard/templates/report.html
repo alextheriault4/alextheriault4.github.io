@@ -1,18 +1,126 @@
 {% extends "base.html" %}{% block header %}{% endblock %}
-{% block title %}Website report for {{ lead.domain }}{% endblock %}
+{% block title %}Website report for {{ lead.business_name or lead.domain }}{% endblock %}
 {% block body %}
+<style>
+  .bar{height:10px;border-radius:5px;background:#e3e6ea;overflow:hidden;margin:.35rem 0}
+  .bar > span{display:block;height:100%;background:var(--accent)}
+  .bar.bad > span{background:var(--bad)} .bar.warn > span{background:var(--warn)} .bar.ok > span{background:var(--ok)}
+  .score{font-size:2.6rem;font-weight:700;line-height:1}
+  .chk{border-bottom:1px solid var(--line);padding:.55rem 0}
+  .chk:last-child{border-bottom:0}
+  .pill{font-size:.75rem;padding:.05rem .45rem;border-radius:999px;border:1px solid var(--line)}
+  .pill.fail{color:var(--bad);border-color:var(--bad)} .pill.pass{color:var(--ok);border-color:var(--ok)}
+  .pill.review{color:var(--warn);border-color:var(--warn)}
+</style>
+
 <h1>Website report for {{ lead.business_name or lead.domain }}</h1>
-<p class="muted">Automated scan of {{ scan.pages|length }} page(s) on {{ scan.created_at[:10] }} by {{ company.name }}. Scores are out of 100.</p>
-<div class="grid"><div class="card"><h3>Accessibility</h3><div class="kpi">{{ scan.ada_score }}{% if verification %} → {{ verification.ada_score }}{% endif %}</div><div class="muted">WCAG 2.1/2.2 AA checks via axe-core plus manual heuristics</div></div>
-<div class="card"><h3>AI-search readiness</h3><div class="kpi">{{ scan.aiseo_score }}{% if verification %} → {{ verification.aiseo_score }}{% endif %}</div><div class="muted">can AI assistants and search engines find, read and describe the business</div></div></div>
-{% if verification %}<p class="badge ok">Verification rescan on {{ verification.created_at[:10] }}</p>{% endif %}
-<h2>What we found</h2>
-<div class="card"><table><tr><th>Area</th><th>Impact</th><th>Issue</th><th>Where</th><th>Count</th>{% if after is not none %}<th>After fix</th>{% endif %}</tr>
-{% for f in findings %}<tr><td>{{ 'Accessibility' if f.kind == 'ada' else 'AI search' }}</td><td class="impact-{{ f.impact }}">{{ f.impact }}</td><td>{{ f.description }}{% if f.help_url %} <a href="{{ f.help_url }}" target="_blank" rel="noopener">?</a>{% endif %}</td><td class="muted">{{ f.page_url.split('/')[-1] or 'home' }}</td><td>{{ f.count }}</td>
-{% if after is not none %}<td>{% set still = after|selectattr('rule_id','equalto',f.rule_id)|list %}{% if still %}<span class="badge warn">still present</span>{% else %}<span class="badge ok">resolved</span>{% endif %}</td>{% endif %}</tr>{% endfor %}</table></div>
+<p class="muted">Automated scan of {{ scan.pages|length }} page{{ '' if scan.pages|length == 1 else 's' }}
+on {{ scan.created_at[:10] }} by {{ company.name }}, against a {{ total_checks }}-point checklist.</p>
+
+{% macro band_class(pct) %}{{ 'ok' if pct >= 85 else ('warn' if pct >= 70 else 'bad') }}{% endmacro %}
+
+<div class="grid">
+{% for card in [ada, seo] %}
+<div class="card">
+  <h3>{{ 'Accessibility' if card.area == 'ada' else 'AI &amp; search readiness' }}</h3>
+  <div class="score">{{ card.percent }}%</div>
+  <div class="bar {{ band_class(card.percent) }}"><span style="width:{{ card.percent }}%"></span></div>
+  <div class="muted">{{ card.band }} &middot; {{ card.passed }} of {{ card.checks_applicable }} applicable checks passed
+  {%- if card.failed %} &middot; {{ card.failed }} to fix{% endif %}</div>
+</div>
+{% endfor %}
+</div>
+
+{% if verification %}
+<p class="badge ok">Rechecked on {{ verification.created_at[:10] }}:
+accessibility {{ scan.ada_score }}% &rarr; {{ verification.ada_score }}%,
+AI &amp; search {{ scan.aiseo_score }}% &rarr; {{ verification.aiseo_score }}%.</p>
+{% endif %}
+
+<h2>Where the score comes from</h2>
+<div class="row">
+{% for card in [ada, seo] %}
+<div class="card"><h3>{{ 'Accessibility' if card.area == 'ada' else 'AI &amp; search' }}</h3>
+{% for c in card.categories %}
+  <div style="margin-bottom:.6rem">
+    <div style="display:flex;justify-content:space-between"><span>{{ c.title.split(' - ')[0] }}</span>
+    <strong>{{ c.percent }}%</strong></div>
+    <div class="bar {{ band_class(c.percent) }}"><span style="width:{{ c.percent }}%"></span></div>
+    <div class="muted" style="font-size:.82rem">{{ c.passed }}/{{ c.passed + c.failed }} passed &middot;
+    {{ c.title.split(' - ')[1] if ' - ' in c.title else '' }}</div>
+  </div>
+{% endfor %}
+</div>
+{% endfor %}
+</div>
+
+<h2>What needs fixing ({{ (ada.failures + seo.failures)|length }})</h2>
+<p class="muted">Heaviest first. &ldquo;We can fix this&rdquo; means it is repaired without you doing anything;
+the rest need a decision or some content only you can supply.</p>
+<div class="card">
+{% for f in (ada.failures + seo.failures)|sort(attribute='weight', reverse=true) %}
+<div class="chk">
+  <div><span class="pill fail">needs fixing</span>
+  <strong>{{ f.title }}</strong>
+  {% if f.auto_fixable %}<span class="pill pass">we can fix this</span>{% endif %}
+  {% if f.count %}<span class="muted">&middot; {{ f.count }} affected</span>{% endif %}</div>
+  <div class="muted" style="margin:.2rem 0">{{ f.why }}</div>
+  {% if f.detail %}<div style="font-size:.88rem"><em>Found:</em> {{ f.detail }}</div>{% endif %}
+  <div style="font-size:.88rem"><em>Fix:</em> {{ f.fix }}</div>
+  <div class="muted" style="font-size:.8rem">{{ f.standard }}</div>
+</div>
+{% else %}
+<p>Nothing failed. Everything on the checklist that applies to this site passed.</p>
+{% endfor %}
+</div>
+
+{% if ada.manual or seo.manual %}
+<h2>Needs a person to check</h2>
+<p class="muted">Automated tools catch roughly a third to a half of accessibility problems. These are the
+items that genuinely need someone with a keyboard and a screen reader, so they are listed here and
+deliberately left out of the percentages rather than guessed at.</p>
+<div class="card">
+{% for f in ada.manual + seo.manual %}
+<div class="chk"><span class="pill review">check by hand</span> <strong>{{ f.title }}</strong>
+<div class="muted">{{ f.why }}</div></div>
+{% endfor %}
+</div>
+{% endif %}
+
+<h2>What passed</h2>
+<div class="card"><p class="muted">
+{{ ada.passed + seo.passed }} checks passed, including
+{% for f in passed_sample %}{{ f.title|lower }}{{ ', ' if not loop.last }}{% endfor %}.
+</p></div>
+
 <h2>What this can cost</h2>
-<div class="card"><p><strong>Estimates, not predictions.</strong> Web-accessibility demand letters and suits against small businesses commonly settle in the {{ assumptions.ada_low_cents|money }}–{{ assumptions.ada_typical_cents|money }} range once legal fees are included, with worse outcomes up to about {{ assumptions.ada_high_cents|money }}. Roughly {{ assumptions.lawsuits_per_year }} such suits are filed per year in the US{% if assumptions.unruh_applies %}; California's Unruh Act adds statutory damages of at least {{ assumptions.unruh_statutory_min_cents|money }} per occurrence{% endif %}.</p>
-<p>On the search side, assuming about {{ assumptions.assumed_monthly_visits }} monthly visits, a {{ (assumptions.assumed_conversion_rate*100)|round(1) }}% conversion rate, an average sale of {{ assumptions.assumed_ticket_cents|money }} and {{ (assumptions.assumed_ai_discovery_share*100)|round(0) }}% of discovery now happening through AI assistants, the current gaps put roughly {{ assumptions.aiseo_annual_low_cents|money }}–{{ assumptions.aiseo_annual_high_cents|money }} of annual revenue at risk. Change any of those assumptions and the number changes with it.</p>
-<p class="muted">Sources: {% for s in assumptions.sources %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}</a>{{ '; ' if not loop.last }}{% endfor %}</p></div>
-<p class="muted">{{ company.legal_name }} · {{ company.postal_address }} · <a href="/u/{{ token }}">unsubscribe</a></p>
+<div class="card">
+<p><strong>These are estimates, not predictions.</strong> Web-accessibility demand letters and suits
+against small businesses commonly settle in the {{ assumptions.ada_low_cents|money }}&ndash;{{ assumptions.ada_typical_cents|money }}
+range once legal fees are counted, with worse outcomes up to about {{ assumptions.ada_high_cents|money }}.
+Roughly {{ assumptions.lawsuits_per_year }} such suits are filed a year in the US{% if assumptions.unruh_applies %};
+California's Unruh Act adds statutory damages of at least {{ assumptions.unruh_statutory_min_cents|money }} per
+occurrence{% endif %}.</p>
+<p>On the search side, assuming about {{ assumptions.assumed_monthly_visits }} monthly visits, a
+{{ (assumptions.assumed_conversion_rate*100)|round(1) }}% conversion rate, an average sale of
+{{ assumptions.assumed_ticket_cents|money }} and {{ (assumptions.assumed_ai_discovery_share*100)|round(0) }}% of
+discovery now happening through AI assistants, the current gaps put roughly
+{{ assumptions.aiseo_annual_low_cents|money }}&ndash;{{ assumptions.aiseo_annual_high_cents|money }} of annual
+revenue at risk. Change any of those assumptions and the number changes with them.</p>
+<p class="muted">Sources: {% for s in assumptions.sources %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}</a>{{ '; ' if not loop.last }}{% endfor %}</p>
+</div>
+
+<h2>How this was measured</h2>
+<div class="card"><p class="muted">
+Each check carries a weight from 1 to 10. The score is the weight earned divided by the weight of the
+checks that apply to this site, so nothing is counted against you that is not relevant &mdash; a site with
+no video is not marked down for missing captions. Checks that need a person, and checks the tools could
+not decide, are excluded from the percentage entirely and listed above instead.
+<strong>A percentage is a measurement of automated conformance, not a statement that a website is legally
+compliant.</strong> No one can promise that, and we don't.
+</p></div>
+
+<p class="muted">{{ company.legal_name }} &middot; {{ company.postal_address }} &middot;
+<a href="/u/{{ token }}">unsubscribe</a> &middot; <a href="/erase/{{ token }}">delete my data</a> &middot;
+<a href="/privacy">privacy</a></p>
 {% endblock %}

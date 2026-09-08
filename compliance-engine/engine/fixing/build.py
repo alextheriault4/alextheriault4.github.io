@@ -16,6 +16,7 @@ from ..config import Settings
 from ..db import Database, utcnow
 from ..llm import LLM
 from ..models import FixStrategy
+from ..standards import BY_ID
 from . import patches
 
 BUILDER_PLATFORMS = {"wix", "squarespace", "godaddy", "weebly", "duda", "webflow", "shopify"}
@@ -72,9 +73,10 @@ def build_bundle(db: Database, settings: Settings, llm: LLM, deal_id: int) -> Bu
                 "region": lead.get("region"), "domain": lead["domain"]}
     home_url = scan["pages"][0]["url"]
     origin = f"{urlparse(home_url).scheme}://{urlparse(home_url).netloc}"
-    package = deal["package"]
-    do_ada = package in ("ada", "bundle")
-    do_seo = package in ("aiseo", "bundle")
+    from .. import plans
+
+    covers = plans.get(settings, deal.get("plan") or deal["package"]).covers
+    do_ada, do_seo = "ada" in covers, "seo" in covers
 
     # Gather text and images across pages for the word-writing calls.
     raw_pages: list[tuple[dict[str, Any], str]] = []
@@ -95,6 +97,8 @@ def build_bundle(db: Database, settings: Settings, llm: LLM, deal_id: int) -> Bu
                 if src and src not in images:
                     images.append(src)
     site_text = "\n".join(site_text_parts)
+    # Facts we can read for ourselves; never invented by the model.
+    site_facts = patches.harvest_facts(site_text, [html for _, html in raw_pages])
 
     alt_text = patches.write_alt_text(llm, images, business) if (do_ada and images) else {}
     profile = patches.extract_profile(llm, business, site_text) if do_seo else None
@@ -108,6 +112,7 @@ def build_bundle(db: Database, settings: Settings, llm: LLM, deal_id: int) -> Bu
             html, page_url=pg["url"], is_home=is_home, lang=lang, meta=meta if do_seo else None,
             profile=profile if do_seo else None, alt_text=alt_text if do_ada else {},
             canonical_url=pg["url"] if do_seo else None, site_name=lead.get("business_name") or lead["domain"],
+            site_facts=site_facts if do_seo else None,
         )
         if not do_ada:
             res.changes = [c for c in res.changes if c.rule_id in patches_seo_rules()]
@@ -144,7 +149,7 @@ def build_bundle(db: Database, settings: Settings, llm: LLM, deal_id: int) -> Bu
         bundle.changes += [{"file": "robots.txt", "rule_id": c.rule_id, "description": c.description, "count": c.count} for c in rchanges]
         bundle.site_files["llms.txt"] = patches.llms_txt(profile, origin, page_index)
         bundle.changes.append({"file": "llms.txt", "rule_id": "llms-txt-missing", "description": "Wrote an llms.txt summary for AI assistants", "count": 1})
-        if not scan["aiseo_summary"]["facts"].get("sitemap_ok"):
+        if not (scan.get("aiseo_summary") or {}).get("facts", {}).get("sitemap_ok"):
             bundle.site_files["sitemap.xml"] = patches.sitemap_xml(page_index)
             bundle.changes.append({"file": "sitemap.xml", "rule_id": "sitemap-missing", "description": "Generated a sitemap", "count": 1})
         bundle.header_snippet = _header_snippet(meta, profile, origin)
@@ -159,33 +164,35 @@ def build_bundle(db: Database, settings: Settings, llm: LLM, deal_id: int) -> Bu
     return bundle
 
 
-NEEDS_INPUT = {
-    "thin-content": "The home page has very little text. Add a few paragraphs describing the business, services and area served.",
-    "no-nap": "Put the business phone number and street address in visible page text (footer is fine).",
-    "not-https": "Serve the site over HTTPS (your host usually offers a free certificate).",
-    "slow-load": "The page loads slowly; compress large images and remove unused scripts.",
-    "video-caption": "Videos need captions; upload a caption file or use your video host's caption feature.",
-    "js-only-content": "Most text only appears after JavaScript runs. Ask your developer/platform for server-side rendering or a static export.",
-    "all-crawlers-blocked": "robots.txt currently blocks every crawler; confirm you want that changed before publishing the new robots.txt.",
-}
-
-
 def _remaining_items(findings: list[dict[str, Any]], fixed_rules: set[str]) -> list[dict[str, Any]]:
+    """Failures we are not going to fix for them, with what each one actually needs.
+
+    Anything the checklist marks un-auto-fixable is a content, hosting or design decision
+    that belongs to the client. Listing it explicitly is the difference between an honest
+    report and one that quietly ignores the hard half.
+    """
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for f in findings:
-        r = f["rule_id"]
-        if r in seen or r in fixed_rules:
+        rule = f["rule_id"]
+        sample = f.get("sample") or {}
+        status = sample.get("status") if isinstance(sample, dict) else None
+        if rule in seen or rule in fixed_rules or status not in ("fail", "needs_review"):
             continue
-        if r in NEEDS_INPUT:
-            seen.add(r)
-            out.append({"rule_id": r, "impact": f.get("impact"), "advice": NEEDS_INPUT[r]})
+        check = BY_ID.get(rule)
+        if check is None or check.auto_fixable:
+            continue
+        seen.add(rule)
+        out.append({"rule_id": rule, "title": check.title, "impact": f.get("impact"),
+                    "advice": check.fix, "why": check.why})
     return out
 
 
 def patches_seo_rules() -> set[str]:
-    return {"title-weak", "title-missing", "meta-description-missing", "og-missing", "canonical-missing", "structured-data-missing",
-            "faq-schema-missing", "robots-missing", "ai-crawlers-blocked", "sitemap-missing", "llms-txt-missing", "h1-missing"}
+    """Check ids that belong to the search half, taken from the registry itself."""
+    from ..standards import checks_for
+
+    return {c.id for c in checks_for("seo")}
 
 
 def _header_snippet(meta: schemas.MetaCopy | None, profile: schemas.BusinessProfile | None, origin: str) -> str:

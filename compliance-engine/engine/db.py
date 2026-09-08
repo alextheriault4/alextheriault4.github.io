@@ -97,8 +97,16 @@ CREATE TABLE IF NOT EXISTS deals (
   stripe_payment_intent TEXT,
   tax_cents INTEGER,
   created_at TEXT NOT NULL,
-  paid_at TEXT, delivered_at TEXT
+  paid_at TEXT, delivered_at TEXT,
+  plan TEXT,                            -- plan id from engine/plans.py
+  monthly_cents INTEGER NOT NULL DEFAULT 0,
+  stripe_subscription_id TEXT,
+  care_started_at TEXT,
+  care_cancelled_at TEXT,
+  next_care_at TEXT,                    -- when the next monthly cycle runs
+  care_cycles INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_deals_care ON deals(next_care_at);
 CREATE INDEX IF NOT EXISTS idx_deals_lead ON deals(lead_id);
 
 CREATE TABLE IF NOT EXISTS fixes (
@@ -167,6 +175,29 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves existing tables alone, so a database made by
+        an earlier version would silently lack the newer columns.
+        """
+        wanted = {
+            "leads": {"clarify_count": "INTEGER NOT NULL DEFAULT 0", "retry_count": "INTEGER NOT NULL DEFAULT 0"},
+            "messages": {"approved": "INTEGER NOT NULL DEFAULT 0", "hold_reason": "TEXT"},
+            "deals": {
+                "plan": "TEXT", "monthly_cents": "INTEGER NOT NULL DEFAULT 0",
+                "stripe_subscription_id": "TEXT", "care_started_at": "TEXT",
+                "care_cancelled_at": "TEXT", "next_care_at": "TEXT",
+                "care_cycles": "INTEGER NOT NULL DEFAULT 0",
+            },
+        }
+        for table, columns in wanted.items():
+            existing = {r["name"] for r in self.query(f"PRAGMA table_info({table})")}
+            for name, ddl in columns.items():
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     # -- low level ---------------------------------------------------------
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:

@@ -8,20 +8,18 @@ import httpx
 
 from engine.db import Database
 from engine.deals.checkout import mark_paid, open_or_create_deal
+from tests.conftest import care_deal
 from engine.finance import ledger
 from engine.fixing.apply import apply_wordpress, patch_wp_content
 from engine.fixing.build import build_bundle
 from engine.fixing.verify import start_fix, verify_deal
 from engine.llm import FakeLLM
-from engine.models import Package
 from engine.scanning.runner import classify_after_scan, persist_scan, scan_site
 from tests.conftest import SiteServer
 
 
-def _paid_deal(db, settings, lead_id, package=Package.BUNDLE):
-    deal = open_or_create_deal(db, lead_id, package, settings.pricing.bundle_cents, "usd")
-    mark_paid(db, settings, deal["id"], payment_intent="pi_x", amount_total_cents=deal["price_cents"])
-    return deal["id"]
+def _paid_deal(db, settings, lead_id):
+    return care_deal(db, settings, lead_id)["id"]
 
 
 def test_bundle_fixes_the_bad_site_and_verification_passes(bad_site, settings, browser, tmp_path):
@@ -45,7 +43,7 @@ def test_bundle_fixes_the_bad_site_and_verification_passes(bad_site, settings, b
     assert (root / "CHANGES.md").exists() and (root / "INSTRUCTIONS.md").exists()
     summary = json.loads(fix["summary"])
     rules = summary["changes_by_rule"]
-    for r in ("image-alt", "html-has-lang", "structured-data-missing", "meta-description-missing", "skip-link", "frame-title", "label", "button-name"):
+    for r in ("image-alt", "page-language", "structured-data", "meta-description", "skip-link", "frame-title", "form-labels", "button-name"):
         assert r in rules, (r, rules)
     assert db.get_lead(lead_id)["status"] == "delivered"
     delivery = db.one("SELECT * FROM messages WHERE kind='delivery' AND lead_id=?", (lead_id,))
@@ -71,7 +69,7 @@ def test_bundle_fixes_the_bad_site_and_verification_passes(bad_site, settings, b
     assert db.one("SELECT 1 FROM messages WHERE kind='delivery' AND subject LIKE 'Before/after%'")
 
     s = ledger.summary(db)
-    assert s["paid_deals"] == 1 and s["gross_cents"] == settings.pricing.bundle_cents and s["net_cents"] < s["gross_cents"]
+    assert s["paid_deals"] == 1 and s["gross_cents"] == settings.pricing.care_setup_cents and s["net_cents"] < s["gross_cents"]
     assert "client_domain" in ledger.export_csv(db).splitlines()[0]
 
 

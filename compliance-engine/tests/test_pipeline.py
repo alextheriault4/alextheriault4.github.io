@@ -8,7 +8,7 @@ import pytest
 from engine.db import Database
 from engine.deals.checkout import mark_paid
 from engine.inbox.handle import process_inbound
-from engine.inbox.negotiate import min_allowed_cents
+from engine import plans
 from engine.inbox.provider import ConsoleProvider
 from engine.llm import FakeLLM
 from engine.outreach.compose import compose_initial
@@ -67,8 +67,10 @@ def test_happy_path_to_paid(scanned_lead, settings):
     assert stats.get("objection_price") == 1
     deal = db.open_deal(lead_id)
     assert deal["status"] == "proposed"
-    assert deal["price_cents"] == min_allowed_cents(settings, settings.pricing.bundle_cents)
-    assert deal["price_cents"] >= settings.pricing.floor_cents
+    floor_setup, floor_monthly = plans.floor_for(settings, plans.catalogue(settings)[deal["plan"]])
+    assert deal["price_cents"] == floor_setup          # clamped to the floor, not the $300 they asked for
+    assert deal["monthly_cents"] == floor_monthly
+    assert deal["price_cents"] >= settings.pricing.floor_setup_cents
 
     # Acceptance → checkout link + checkout email queued
     _reply(provider, db, lead_id, "Ok, go ahead and send the link")
