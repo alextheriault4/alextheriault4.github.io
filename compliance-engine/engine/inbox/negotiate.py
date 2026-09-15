@@ -16,7 +16,7 @@ from ..llm import LLM, LLMError, LLMRefusal
 from .. import plans
 from ..outreach.compose import build_context
 
-SYSTEM_PROMPT = """You are the account manager at a small agency that fixes website accessibility (WCAG 2.1 AA) and
+SYSTEM_PROMPT = """You are the account manager at a small agency that fixes website accessibility (WCAG 2.2 AA) and
 AI-search readiness for small businesses. You are replying inside an existing email thread.
 
 Policy you must follow:

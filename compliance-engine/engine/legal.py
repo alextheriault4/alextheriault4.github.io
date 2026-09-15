@@ -44,7 +44,7 @@ LEGAL_CLAIM_PHRASES = [
 SAFE_ALTERNATIVES = {
     "violates": "was flagged by the scan against",
     "illegal": "flagged",
-    "non-compliant": "flagged against WCAG 2.1 AA checks",
+    "non-compliant": "flagged against WCAG 2.2 AA checks",
     "required by law": "commonly expected",
 }
 
